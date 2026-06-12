@@ -1,0 +1,47 @@
+# Secrets — never commit
+**/*.env
+**/*.env.*
+**/secrets*
+**/credentials*
+**/*.key
+**/*.pem
+**/.npmrc
+**/.netrc
+**/.aws/
+**/.gh-token
+**/auth.json
+**/*token*
+
+# Negation: the documented placeholder template MUST ship (it is matched by
+# `**/*.env.*` above, so re-include it AFTER the broad ignores — order matters).
+!**/.env.example
+
+# Dependencies / build artifacts
+**/node_modules/
+**/dist/
+**/build/
+**/.next/
+**/.vite/
+**/coverage/
+
+# OS / editor
+**/.DS_Store
+**/Thumbs.db
+**/desktop.ini
+**/.idea/
+**/.vscode/
+
+# Local runtime / scratch (never publish)
+.tmp/
+**/*.log
+ai/tasks/*/tmp/
+ai/tasks/*/.cache/
+**/worktrees/
+
+# Out-of-tree certification record (WP6): the certified SHA + final scan outputs
+# are recorded here per-task and must NEVER be committed (it would self-reference
+# the freeze commit it certifies).
+ai/tasks/*/certification-record.local.md
+
+# Review scratch (the commit itself is the diff)
+*.diff

@@ -1,0 +1,90 @@
+# Plan: {{ISSUE_KEY}} — {{SUMMARY}}
+
+## Plan Version: {{VERSION}}
+## Verdict: PENDING
+## Engine: {{ENGINE}}
+## Date: {{DATE}}
+
+## Goal
+{{GOAL}}
+
+## Inputs
+- context.md v{{CONTEXT_VERSION}}
+- {{RELEVANT_DOCS}}
+
+## Constraints
+{{CONSTRAINTS}}
+
+## Assumptions
+{{ASSUMPTIONS}}
+
+## Acceptance Criteria Mapping
+| AC # | Criteria | Implementation Step |
+|------|----------|-------------------|
+| 1 | {{AC_1}} | Step {{STEP}} |
+
+## Implementation Steps
+1. **{{STEP_TITLE}}**
+   - Files: {{FILES}}
+   - Complexity: Low | Medium | High
+   - Validation: {{VALIDATION}}
+
+## Affected Files
+- {{FILE_PATH}} (create | modify | delete)
+
+## Validation Plan
+- [ ] Unit tests for new logic
+- [ ] Manual test: {{MANUAL_TEST}}
+- [ ] Build passes (npm run build)
+- [ ] Existing tests pass (npm run test)
+- [ ] RLS policy check (if new tables)
+
+## Risks
+- {{RISK}}: mitigation — {{MITIGATION}}
+
+## GRACE Packet (FULL mode — when task touches governed paths AND `graceMode = "full"` in state.json)
+
+Use this section ONLY in full-GRACE mode — when markup + XML updates are applied in the same task as the code change (pilot-branch implementation). If `graceMode = "deferred"` or the task touches no governed paths, DELETE this section and use "GRACE Reference (Deferred Mode)" below instead.
+
+- **Module ID(s)**: <M-ID>
+- **Contract excerpt**: (paste from `docs/development-plan.xml` -> `<M-ID>/<contract>`)
+- **Dependencies to respect**: (list M-* modules and their contract summaries)
+- **Verification entry**: <V-M-ID>
+- **Required log markers**: (from `docs/verification-plan.xml` -> `<V-M-ID>/<required-log-markers>`)
+- **Blocks to add or modify**: (START_BLOCK_* names)
+- **Files in write scope**: (from `docs/operational-packets.xml` -> `<write-scope>`)
+
+### GRACE governance tasks (full mode only)
+
+If full mode, plan MUST include explicit tasks for:
+- Update `MODULE_CONTRACT` header (VERSION bump, DEPENDS if new edge, MAP if new export, CHANGE_SUMMARY entry)
+- Update `docs/development-plan.xml` `<interface>` / `<depends>` / `<observability>` / `<notes>` deltas
+- Update `docs/knowledge-graph.xml` CrossLinks if cross-module edges added/removed
+- Update `docs/verification-plan.xml` `<V-M-*>` if new scenarios / markers / test files
+- Final gate: `grace lint --profile autonomous --path .` → 0/0
+
+## GRACE Reference (DEFERRED mode — when `graceMode = "deferred"` in state.json)
+
+Use this section in deferred mode. Lists the modules + contracts for awareness, but does NOT enumerate markup/XML tasks in the plan — those are batched during a later `taskctl sync-grace` pass after dev merge.
+
+- **Modules in scope** (read-only reference): <M-ID list>
+- **Contract summaries**: (one-line per module, from `docs/development-plan.xml` → `<M-ID>/<contract>/<purpose>`)
+- **Existing CrossLinks** that influence blast radius: (list from `docs/knowledge-graph.xml`)
+- **Logging style to match**: (e.g., `[ProjectBranding][funcName][BLOCK_*]` — use same format for new logs, but do NOT plan explicit marker-addition tasks)
+
+### Proposed Contract Changes (deferred to next sync)
+
+Describe what WILL be applied to governance artefacts during the next `taskctl sync-grace` pass on the pilot branch. Do NOT apply these in this task.
+
+- **New modules** (if epic introduces new M-IDs): <M-ID + purpose + depends>
+- **Changed dependencies**: (e.g., `M-ONBOARDING` adds dependency on `M-PROJECT-BRANDING`)
+- **New exports** (if new public-facing functions/components): <function name + 1-line purpose>
+- **New CrossLinks**: (from → to + relation)
+- **New observability blocks**: (BLOCK_NAME + purpose) — used in code with correct log format, but XML entry added at sync time
+- **New verification scenarios**: (V-M-* scenario additions) — tests written in this task, XML entry added at sync time
+
+## Done Criteria
+- [ ] All acceptance criteria satisfied
+- [ ] Tests pass
+- [ ] Build passes
+- [ ] PR created to dev branch

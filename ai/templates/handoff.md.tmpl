@@ -1,0 +1,34 @@
+# Handoff: {{ISSUE_KEY}}
+
+## Date: {{DATE}}
+## Stage: {{STAGE}}
+
+## What was done
+{{COMPLETED_WORK}}
+
+## Where we stopped
+{{CURRENT_STATE}}
+
+## What remains
+{{REMAINING_WORK}}
+
+## Risks and open questions
+{{RISKS}}
+
+## Required checks before resuming
+{{CHECKS}}
+
+- build status: <passing | failing>
+- test status: <passing | N failing>
+- grace lint status: <clean | issues: N errors / M warnings>
+
+## GRACE Gates
+
+- grace lint --profile standard: <0 errors / 0 warnings | FAILED: ... | SKIPPED: ...>
+- grace lint --profile autonomous: <0 errors / 0 warnings | FAILED: ... | SKIPPED: ...>
+- python ET.parse (4 XMLs): <OK (4 XMLs well-formed) | FAILED: ... | SKIPPED: ...>
+- Branch at gate-time: <experiment/grace-pilot | ...>
+- Gate verdict: <PASS | FAIL | SKIPPED (non-pilot branch) | SKIPPED (grace CLI unavailable)>
+
+## Next action
+{{NEXT_ACTION}}

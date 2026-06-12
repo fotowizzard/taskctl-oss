@@ -1,0 +1,25 @@
+# taskctl gitleaks config — keep ALL default rules; narrowly allow ONE benign finding.
+#
+# The only allowed finding is a benign task-id slug in a single WP task-state file
+# (ai/tasks/WP2-decouple-vp/state.json). It is a tracker-style task id, not a
+# credential — a generic-api-key false positive. The allowlist below is scoped to
+# that one rule, that one file path, AND the exact reported match value; it does
+# NOT disable the rule globally and does NOT whitelist the whole file.
+[extend]
+useDefault = true
+
+[[rules]]
+id = "generic-api-key"
+
+  [[rules.allowlists]]
+  description = "benign WP2 task-id slug in ai/tasks/WP2-decouple-vp/state.json"
+  # Both conditions must hold: a finding is allowed ONLY if it is in this exact
+  # file AND its reported Match equals the benign key/value. A secret on another
+  # line of this file, or this slug appearing elsewhere, is NOT whitelisted.
+  condition = "AND"
+  paths = ['''(^|/)ai/tasks/WP2-decouple-vp/state\.json$''']
+  # regexTarget = "match" anchors against the value gitleaks reports in its JSON
+  # `Match` field (which begins at the key token, no leading quote), NOT the raw
+  # source line and NOT the extracted secret.
+  regexTarget = "match"
+  regexes = ['''issueKey":\s*"WP2-decouple-vp"''']

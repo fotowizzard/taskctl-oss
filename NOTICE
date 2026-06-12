@@ -1,0 +1,27 @@
+taskctl
+=======
+
+taskctl is licensed under the MIT License (see LICENSE).
+
+Third-party methodology integration
+-----------------------------------
+
+The optional, off-by-default governance module (`taskctl/grace.mjs`, enabled
+only when `grace.enabled` is set in taskctl.config.json) integrates with the
+GRACE methodology — Graph-RAG Anchored Code Engineering — by Vladimir Ivanov
+(osovv), https://github.com/osovv/grace-marketplace (MIT).
+
+taskctl *wraps* GRACE; it does NOT vendor upstream GRACE code. `taskctl/grace.mjs`
+is original taskctl code (the lint/XML gate, the prompt-hint and context-block
+builders, and the sync-grace pipeline). The four GRACE subagent role files
+(module-implementer, contract-reviewer, fixer, verification-reviewer) are NOT
+included in this repository. You can verify both claims:
+
+  - no vendored role files:  find . -iname '*grace-*-reviewer*'   (no results)
+  - original wrapper:        inspect taskctl/grace.mjs
+
+Attribution layering: the comment at the top of `taskctl/grace.mjs` is the
+source-level provenance (crediting the upstream author in code); this NOTICE and
+the README "Attribution" section are the distribution-facing credit. The
+compliance fact is that no upstream GRACE source is vendored here — not a
+line-count argument.

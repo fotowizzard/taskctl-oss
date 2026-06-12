@@ -1,0 +1,15 @@
+{
+  "name": "taskctl",
+  "version": "0.1.0",
+  "description": "CLI orchestrator for AI-assisted development (plan → review → run → review → publish)",
+  "type": "module",
+  "engines": { "node": ">=18" },
+  "bin": {
+    "taskctl": "./cli.mjs"
+  },
+  "scripts": {
+    "sync": "node cli.mjs sync",
+    "status": "node cli.mjs status",
+    "test": "node --test __tests__/*.test.mjs"
+  }
+}

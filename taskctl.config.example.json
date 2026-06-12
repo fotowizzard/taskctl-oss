@@ -1,0 +1,30 @@
+{
+  "//": "taskctl.config.json — optional config layer. Every field is optional; absence resolves to a project-neutral default (never an origin-project value).",
+  "//repoPath": "Source repo the worktree/prompts target. Relative values resolve against THIS file's dir, so '.' is portable across machines. If omitted, a repo-needing command errors unless --repo-path or REPO_PATH is set (there is NO built-in default repo).",
+  "//tracker": "Selects the task source. 'local' = no tracker (create tasks with `taskctl new`). 'jira' = wrap the Jira flow (requires JIRA_* env; JIRA_PROJECT_KEY stays ENV-ONLY, never JSON). tracker.assigneeEmail (optional) auto-assigns the Jira issue on publish --jira; omit to skip auto-assign.",
+  "//branches": "integration = worktree base + review diff base (default 'dev'). prTarget = PR base for publish (defaults to integration).",
+  "//engines": "planner/reviewer = default engine names (default 'claude'/'codex'). reasoningEffort = codex reasoning tier (default 'high').",
+  "//promptLanguage": "'en' (default) or 'ru'. Selects the prompt-pack language only; both packs carry project-neutral semantics.",
+  "//projectContext": "Optional string[] of verbatim '## Project Context' lines for context.md (e.g. tech stack, docs). Omitted when empty.",
+  "//constraints": "Optional string[] of verbatim '## Constraints' lines for context.md. Omitted when empty.",
+  "//codeAreas": "Optional keyword -> string[] map driving the 'Relevant Code Areas' heuristic. Omitted -> a generic 'src/' stub.",
+  "//previewUrlTemplate": "Optional preview URL with a {pr} placeholder (e.g. 'https://pr{pr}.example.com/'). Omitted -> no preview line in the Jira comment.",
+  "//grace": "Optional GRACE governance (opt-in, default disabled). { enabled, repoRoot, pilotBranch, upstreamBranch }.",
+
+  "//--- Local project (no Jira) ---": "",
+  "repoPath": ".",
+  "tracker": { "type": "local" },
+
+  "//--- Full example (Jira project; credentials + JIRA_PROJECT_KEY come from .env, never JSON) ---": {
+    "repoPath": "/path/to/your/repo",
+    "tracker": { "type": "jira", "assigneeEmail": "you@example.com" },
+    "branches": { "integration": "dev", "prTarget": "dev" },
+    "engines": { "planner": "claude", "reviewer": "codex", "reasoningEffort": "high" },
+    "promptLanguage": "en",
+    "projectContext": ["Tech stack: <your stack>", "Docs: see README"],
+    "constraints": ["PRs only, no direct commits to the integration branch"],
+    "codeAreas": { "billing": ["src/billing/"], "auth": ["src/auth/"] },
+    "previewUrlTemplate": "https://pr{pr}.example.com/",
+    "grace": { "enabled": false }
+  }
+}
