@@ -1,6 +1,6 @@
-{
+﻿{
   "name": "taskctl",
-  "version": "0.1.0",
+  "version": "0.1.0-prealpha.0",
   "description": "CLI orchestrator for AI-assisted development (plan → review → run → review → publish)",
   "type": "module",
   "engines": { "node": ">=18" },
