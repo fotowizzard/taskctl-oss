@@ -61,6 +61,58 @@ methodology is in [`docs/methodology/`](docs/methodology/); the mining evidence 
 
 ---
 
+## How it all fits together
+
+The whole tool in one view — how an existing repo is attached, where per-task context, rules and
+skills live, and where the engines, Jira, worktrees and the optional GRACE branch sit.
+
+```mermaid
+flowchart LR
+  classDef opt stroke-dasharray:5 4;
+  classDef core stroke-width:2px;
+
+  A["① Connect<br/>———<br/>attach — read-only profile<br/>new-project — from an idea"]
+
+  subgraph WS["② Orchestration workspace · the sidecar"]
+    direction TB
+    CLIN["taskctl CLI — Node, zero-dep<br/>———<br/>cli · automation · profiler<br/>newproject · context-builder<br/>tracker · jira-client · grace"]
+    TASKS["ai/tasks/&lt;id&gt;/ — per task<br/>———<br/>context.md<br/>plan.md<br/>state.json<br/>review.md<br/>audit-iterN.md<br/>progress.md<br/>rollback.sql"]
+    KNOW["knowledge → prompts<br/>———<br/>ai/rules/<br/>docs/methodology/<br/>skills/<br/>taskctl.config.json"]
+  end
+
+  subgraph ENG["③ Engine CLIs · two vendors"]
+    direction TB
+    PL["claude — planner<br/>plans + implements"]
+    RV["codex — reviewer<br/>independent cross-check"]
+  end
+
+  subgraph TGT["④ Target repo · attach never mutates it"]
+    direction TB
+    WT["per-task worktree<br/>———<br/>cut from integration branch<br/>node_modules junction / symlink<br/>run · review · fix here"]
+    GUARD{{"branch-guard<br/>PR-only · no direct push"}}
+    INT["integration branch (dev)<br/>main / production protected"]
+    GR["GRACE branch — optional, off<br/>———<br/>MODULE_CONTRACT + XML graph<br/>read-path → plan/review prompts"]
+    WT --> GUARD
+    GUARD -->|"publish · PR"| INT
+  end
+
+  JIRA["Jira — optional tracker<br/>———<br/>local is the default<br/>sync → context · publish → PR label"]
+
+  A --> CLIN
+  CLIN -->|"plan / review"| PL
+  RV -->|"verdict → audit → fix"| CLIN
+  CLIN -->|"run → worktree"| WT
+  CLIN -. "sync / publish" .-> JIRA
+  CLIN -. "sync-grace · batched" .-> GR
+
+  class JIRA,GR opt
+  class PL,RV,WT core
+```
+
+*Legend: solid = core flow · dashed = optional / read-only · hexagon = branch-guard (PR-only).*
+
+---
+
 ## The lifecycle — how a task moves
 
 Every task advances through inspected stages. The verdicts and feedback loops are the point:
