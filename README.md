@@ -104,6 +104,49 @@ risk-accepting opt-in (see [flipped-flow.md](docs/methodology/flipped-flow.md)).
 
 ---
 
+## Getting started
+
+A first run, end to end. (`taskctl` below is shorthand for `node taskctl/cli.mjs` — alias it
+if you like.)
+
+**1 · Prerequisites.** Node.js ≥ 18, plus the engine CLIs you intend to use — by default the
+`claude` and `codex` CLIs, **each already authenticated** in your shell. The cross-model loop
+needs *two distinct* engines to be meaningful; with only one, set both roles to it and accept
+the loss of the cross-vendor benefit.
+
+**2 · Get taskctl and smoke-test it.** No package-manager release yet — clone and run the CLI
+directly:
+
+```
+git clone https://github.com/fotowizzard/taskctl-oss && cd taskctl-oss
+node taskctl/cli.mjs --help
+cd taskctl && npm test     # 313 tests, Node's built-in runner, zero deps
+```
+
+**3 · Point it at your work** — two entry paths (detailed in *Two ways in* below):
+
+```
+taskctl attach <path-to-existing-repo>     # read-only profile → taskctl.config.json
+taskctl new-project "<your idea>"          # idea → scaffold → backlog → attach
+```
+
+`attach` derives a `taskctl.config.json` into your orchestration workspace (the sidecar) and
+never touches the target repo. From there, author work with `taskctl new <slug>` (a local
+task) or `taskctl sync <task-id>` (from a tracker).
+
+**4 · Drive the first stage, then look before advancing:**
+
+```
+taskctl do plan <task-id>         # planner writes plan.md  → read it
+taskctl do plan-review <task-id>  # a different engine reviews it → you verify the findings
+```
+
+Continue through `run → review → publish` as the task moves. That drive-inspect-verify-advance
+rhythm, one stage at a time, *is* the methodology; the chained automations (`flow`,
+`autopilot`, `--auto`) are for when you knowingly trade it away.
+
+---
+
 ## Two ways in
 
 ### Attach to an existing repo (read-only)
@@ -153,8 +196,8 @@ self-contained workspace ready to run the lifecycle.
   state-mutating command runs). Per-role *model* selection isn't configurable yet — a
   single-engine setup means setting both roles to the same adapter.
 - **Read-only comprehension layer.** The `attach` profiler derives per-project config by
-  analysis; an optional, off-by-default **GRACE** governance tier adds curated contracts for
-  large/critical repos (see *Attribution*).
+  analysis; an optional, off-by-default **GRACE** governance tier adds curated cross-module
+  contracts for large/critical repos (see the *GRACE* section below).
 - **Per-task git worktrees.** A task runs in its own worktree, created from the integration
   branch (fetched when a new branch is cut). Offline or on failure it falls back to a
   cached/local ref, or — if the worktree can't be created — to the main repo. PR-only by
@@ -222,22 +265,6 @@ across machines. Jira credentials and `JIRA_PROJECT_KEY` are **env-only**, never
 
 ---
 
-## Requirements & running
-
-- **Node.js ≥ 18** (uses the built-in test runner; zero runtime dependencies).
-- **The engine CLIs you configure** — the cross-model loop needs *two distinct* engines to be
-  meaningful (default: the `claude` and `codex` CLIs, each authenticated). With only one, set
-  both roles to it — you lose the cross-vendor benefit.
-
-There is no package-manager release yet — clone the repo and run the CLI directly:
-
-```
-node taskctl/cli.mjs --help
-cd taskctl && npm test     # 313 tests, Node's built-in runner
-```
-
----
-
 ## Methodology & skills
 
 The differentiator ships in two consumable forms — readable methodology for humans, loadable
@@ -252,6 +279,41 @@ the `--auto` caveat).
 **Skills** ([skills/](skills/)) — six agent-loadable `SKILL.md` files: `orchestrator-verify`,
 `cross-model-review`, `empirical-first`, `review-loop-autopilot`, `worktree-isolate`,
 `branch-guard`. See the [skills index](skills/README.md).
+
+---
+
+## GRACE — optional governance tier (off by default)
+
+Most repos don't need this — `attach`'s read-only profiler already gives taskctl enough to
+drive a project. **GRACE** is an opt-in *second* comprehension layer for the cases where that
+isn't enough: large, multi-module, or critical codebases where the expensive mistakes are
+**cross-module** — a change that looks correct in one file quietly breaks an invariant three
+modules away.
+
+**What it is.** GRACE — Graph-RAG Anchored Code Engineering — is a contract-first methodology:
+governed files carry a curated `MODULE_CONTRACT` header, and a small set of XML artefacts
+describe the modules, the **edges between them** (a knowledge graph), and verification
+scenarios. taskctl *wraps* this methodology — it **reads** those artefacts; it does not vendor
+any upstream GRACE code (see *License & attribution*).
+
+**Why it helps — the value is the read-path.** With GRACE enabled, taskctl injects pointers to
+the relevant module contracts and knowledge-graph edges **into the planning and review
+prompts**. The planner and reviewer then reason over an explicit map of how modules depend on
+each other instead of re-inferring it file-by-file — which is exactly what catches a missing
+cross-module edge that single-file review would wave through. That acuity, not any gate, is the
+reason to turn it on.
+
+**What it deliberately does *not* do.** It does not make every task write contract/XML markup
+inline — that would bloat each change. The governance markup is **batched** instead:
+`taskctl sync-grace` rebases the governed branch and applies the markup/XML deltas for recently
+merged work in one pass (with an optional `grace-gate` lint check). You get the planning acuity
+continuously, and pay the bookkeeping cost in periodic batches.
+
+**Turning it on.** Set `"grace": { "enabled": true }` in `taskctl.config.json` and point
+`GRACE_REPO_ROOT` at the governed repository. The `grace-gate` and `sync-grace` commands surface
+only while it's enabled; with the default `enabled: false`, GRACE is entirely inert — no prompt
+changes, no gate runs. The methodology is designed by Vladimir Ivanov; the grace-marketplace
+reference implementation is by Aleksey Chendemerov (osovv) — full credit in [NOTICE](NOTICE).
 
 ---
 
