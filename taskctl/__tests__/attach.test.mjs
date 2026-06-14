@@ -656,7 +656,7 @@ test('T5: DOGFOOD — pinned literals on THIS repo (intentional EXPANSION, no eq
   assert.equal(cfg.branches.integration, 'main');
   assert.equal(cfg.branches.prTarget, 'main');
   assert.deepEqual(cfg.projectContext, [
-    'Project: taskctl (working title — name TBD, folder renameable)',
+    'Project: taskctl',
     'See README.md for project overview.',
   ]);
   assert.deepEqual(cfg.codeAreas, { docs: ['docs/'] });

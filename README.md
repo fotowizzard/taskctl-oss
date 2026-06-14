@@ -1,23 +1,23 @@
-# taskctl (working title — name TBD, folder renameable)
+# taskctl
 
-> **Pre-alpha. Not published, not yet usable by others.** Extraction in progress.
+> **Pre-alpha (`v0.1.0-prealpha`).** Dogfooded only on its own extraction — no
+> third-party use yet, no package-manager release. Expect rough edges; behaviour may change.
 
 A CLI + methodology for **disciplined, multi-model AI software development**: one engine
 plans and implements, a *different* engine reviews, and an orchestrator independently
 verifies every finding before acting on it. Point it at an existing repository
 (non-invasively) or start a new project from a plain idea.
 
-This repository is being extracted from a private single-project workspace into a
-generic, embeddable open-source tool. The extraction is staged and de-risked — see
-[docs/plans/ROADMAP.md](docs/plans/ROADMAP.md) for scope, phases, and the hard
-constraints (fresh history, zero secrets, decouple-before-publish).
+This tool was extracted from a private single-project workspace into a generic,
+embeddable open-source CLI — with a fresh git history and no secrets carried over.
+See [docs/plans/ROADMAP.md](docs/plans/ROADMAP.md) for the scope, the phased build,
+and the hard constraints the extraction held to.
 
 ## Status
 
-**Pre-alpha.** It has been *dogfooded only on this repository's own extraction* —
-it has not been used by third parties, there is no installable release, and the
-public packaging/push step is gated behind the owner's review. Expect rough
-edges; treat behaviour as subject to change. See
+**Pre-alpha.** It has been *dogfooded only on its own extraction* — it has not
+been used by third parties, and there is no package-manager release (clone it to
+use it). Expect rough edges; treat behaviour as subject to change. See
 [docs/plans/ROADMAP.md](docs/plans/ROADMAP.md) for status and
 [docs/limitations.md](docs/limitations.md) for the known limitations and the
 deliberate exceptions.
