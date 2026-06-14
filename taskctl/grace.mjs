@@ -28,7 +28,8 @@
  *   via `taskctl sync-grace` on the pilot branch). The former "full" mode and
  *   its `--full-grace`/`--deferred-grace` flags are removed.
  *
- * Upstream: GRACE methodology by Vladimir Ivanov (osovv) —
+ * Upstream: GRACE methodology designed by Vladimir Ivanov (@turboplanner);
+ * reference implementation grace-marketplace by Aleksey Chendemerov (osovv), MIT —
  * https://github.com/osovv/grace-marketplace
  */
 

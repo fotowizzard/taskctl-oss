@@ -20,9 +20,10 @@ These are not oversights; they are kept on purpose:
 
 - **The GRACE methodology name and attribution.** The words `GRACE` / `grace`,
   the module `taskctl/grace.mjs`, the `grace.enabled` config flag, and the
-  attribution to its author (osovv) appear by design. GRACE is a public upstream
-  methodology that the optional governance module integrates with (it wraps, it
-  does not vendor — see [NOTICE](../NOTICE)).
+  attribution to GRACE's designer (Vladimir Ivanov) and to the grace-marketplace
+  repository (osovv / Aleksey Chendemerov) appear by design. GRACE is a public
+  upstream methodology that the optional governance module integrates with (it
+  wraps, it does not vendor — see [NOTICE](../NOTICE)).
 - **Non-English prompt text.** The CLI can emit prompts in more than one
   language. The bundled non-English prompt pack (`taskctl/prompts/ru.mjs`) ships
   intentionally so installs that prefer that language work out of the box; the

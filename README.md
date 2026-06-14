@@ -283,6 +283,9 @@ Windows, a symlink on POSIX). Reports from other platforms are welcome.
 taskctl is licensed under the [MIT License](LICENSE) — Copyright (c) 2026 fotowizzard.
 
 The optional, off-by-default governance module **integrates with (wraps, does not vendor)** the
-**GRACE** methodology — Graph-RAG Anchored Code Engineering — by Vladimir Ivanov (osovv),
-[github.com/osovv/grace-marketplace](https://github.com/osovv/grace-marketplace) (MIT). See
-[NOTICE](NOTICE) for the full attribution and how to verify no upstream GRACE code is vendored here.
+**GRACE** methodology — Graph-RAG Anchored Code Engineering — **designed by Vladimir Ivanov**
+([@turboplanner](https://t.me/turboplanner)). Its reference implementation, the
+[grace-marketplace](https://github.com/osovv/grace-marketplace) repository (MIT, © GRACE Framework
+Contributors), is by **Aleksey Chendemerov** (osovv) — a separate person from the methodology's
+designer. See [NOTICE](NOTICE) for the full attribution and how to verify no upstream GRACE code is
+vendored here.

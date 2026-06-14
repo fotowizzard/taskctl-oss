@@ -8,8 +8,10 @@ Third-party methodology integration
 
 The optional, off-by-default governance module (`taskctl/grace.mjs`, enabled
 only when `grace.enabled` is set in taskctl.config.json) integrates with the
-GRACE methodology — Graph-RAG Anchored Code Engineering — by Vladimir Ivanov
-(osovv), https://github.com/osovv/grace-marketplace (MIT).
+GRACE methodology — Graph-RAG Anchored Code Engineering — designed by Vladimir
+Ivanov (@turboplanner). Its reference implementation, the grace-marketplace
+repository (https://github.com/osovv/grace-marketplace), is by Aleksey
+Chendemerov (osovv) and is MIT-licensed (© GRACE Framework Contributors).
 
 taskctl *wraps* GRACE; it does NOT vendor upstream GRACE code. `taskctl/grace.mjs`
 is original taskctl code (the lint/XML gate, the prompt-hint and context-block
