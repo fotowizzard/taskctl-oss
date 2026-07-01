@@ -161,6 +161,42 @@ risk-accepting opt-in (see [flipped-flow.md](docs/methodology/flipped-flow.md)).
 
 ## Getting started
 
+### The fast path — paste one prompt; the agent sets it up and drives
+
+Open a coding-agent session (e.g. Claude Code) in an **empty folder** and paste this. It becomes
+your orchestrator — it clones taskctl, learns its role, wires it to your repo, and drives tasks,
+pausing for you at the decisions:
+
+```text
+You are my taskctl orchestrator. taskctl (github.com/fotowizzard/taskctl-oss) runs a disciplined,
+multi-model dev lifecycle — drive it for me and pause at the decisions. Step by step, asking me
+whenever you need input:
+
+1. Clone it here and learn your role:
+   git clone https://github.com/fotowizzard/taskctl-oss .
+   Read README.md, docs/methodology/ and skills/orchestrator-verify. You DRIVE taskctl; the engines
+   (a planner + a DIFFERENT-vendor reviewer) write the code and plan — and you independently verify
+   every reviewer finding against the real code before acting on it.
+
+2. Wire it to the repo I want to work on (ask me for its path):
+   node taskctl/cli.mjs attach <my-repo-path>   # read-only profile -> taskctl.config.json
+   node taskctl/cli.mjs init-harness            # scaffold my operating contract + playbook
+   If I use a tracker, help me fill .env from .env.example. Confirm my engine CLIs
+   (default: claude + codex) are authenticated.
+
+3. Smoke-test, then tell me what is left:
+   node taskctl/cli.mjs --help && node taskctl/cli.mjs status
+
+4. Then drive tasks one stage at a time (frame -> plan -> plan-review -> run -> review): show me the
+   plan/diff and your verification of each reviewer finding between stages, and advance only after I
+   approve. Ask me at every fork.
+```
+
+After `init-harness` your workspace has a `CLAUDE.md` + `/bootstrap`, so **next time you just open the
+agent in that folder and it loads its role automatically** — no prompt needed.
+
+### Or step through it yourself
+
 A first run, end to end. (`taskctl` below is shorthand for `node taskctl/cli.mjs` — alias it
 if you like.)
 
