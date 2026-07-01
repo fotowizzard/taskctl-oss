@@ -3,14 +3,20 @@
 > **Pre-alpha** (release tag `v0.1.0-prealpha`). Dogfooded only on its own extraction — no
 > third-party use yet, no package-manager release. Expect rough edges; behaviour may change.
 
-**taskctl** is a CLI that structures a disciplined, **multi-model** software-development
-lifecycle on top of the coding agents you already use (e.g. Claude Code + Codex CLI).
+**taskctl** is the engine an **AI orchestrator drives on your behalf** to run a disciplined,
+**multi-model** software-development lifecycle on top of the coding agents you already use
+(e.g. Claude Code + Codex CLI). You open a coding-agent session in an orchestration workspace;
+the agent — following the harness it loads (its role in `CLAUDE.md` + the task playbook) —
+frames tasks, runs each through cross-model review, and drives the stages *in the background*,
+pausing to ask you only at the decisions that matter. You talk to the orchestrator; taskctl is
+the machinery under the hood. *(Prefer full control? Be the orchestrator yourself and run the
+CLI by hand — same commands, same discipline.)*
+
 Its premise: a single AI model reviewing its own work has correlated blind spots, and
 unattended automation hides the bugs that matter. So taskctl runs each task through stages
-where — by default — **a different engine reviews the work**, and it is built around a
-discipline it expects the *orchestrator* driving it (a human, or a supervising agent
-following the [`orchestrator-verify`](skills/orchestrator-verify/SKILL.md) skill) to apply:
-**independently verify every reviewer finding before acting on it.**
+where — by default — **a different engine reviews the work**, around one discipline it expects
+the orchestrator (the agent, or you) to apply: **independently verify every reviewer finding
+before acting on it** — the [`orchestrator-verify`](skills/orchestrator-verify/SKILL.md) skill.
 
 Two honest framings up front:
 
@@ -380,7 +386,7 @@ continuously, and pay the bookkeeping cost in periodic batches.
 `GRACE_REPO_ROOT` at the governed repository. The `grace-gate` and `sync-grace` commands surface
 only while it's enabled; with the default `enabled: false`, GRACE is entirely inert — no prompt
 changes, no gate runs. The methodology is designed by Vladimir Ivanov; the grace-marketplace
-reference implementation is by Aleksey Chendemerov (osovv) — full credit in [NOTICE](NOTICE).
+implementation is by Aleksey Chendemerov (osovv) — full credit in [NOTICE](NOTICE).
 
 ---
 
@@ -413,7 +419,7 @@ taskctl is licensed under the [MIT License](LICENSE) — Copyright (c) 2026 foto
 
 The optional, off-by-default governance module **integrates with (wraps, does not vendor)** the
 **GRACE** methodology — Graph-RAG Anchored Code Engineering — **designed by Vladimir Ivanov**
-([@turboplanner](https://t.me/turboplanner)). Its reference implementation, the
+([@turboplanner](https://t.me/turboplanner)). An implementation, the
 [grace-marketplace](https://github.com/osovv/grace-marketplace) repository (MIT, © GRACE Framework
 Contributors), is by **Aleksey Chendemerov** (osovv) — a separate person from the methodology's
 designer. See [NOTICE](NOTICE) for the full attribution and how to verify no upstream GRACE code is
