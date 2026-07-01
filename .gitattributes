@@ -1,0 +1,8 @@
+# Keep line endings LF in the repo so Windows checkouts of copies don't create
+# phantom CRLF diffs against this base. Shell scripts MUST be LF to run under bash.
+*.sh    text eol=lf
+*.mjs   text eol=lf
+*.js    text eol=lf
+*.json  text eol=lf
+*.md    text eol=lf
+*.tmpl  text eol=lf

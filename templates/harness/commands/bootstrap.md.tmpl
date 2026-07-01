@@ -1,0 +1,33 @@
+---
+description: Load the {{PROJECT}} session playbook — orchestrator-auditor mode, taskctl + GRACE, current state
+---
+
+# Bootstrap — {{PROJECT}} orchestration session playbook
+
+Before doing anything else for the user's request. (Paths below are **relative to the orchestration repo root** — wherever this repo is cloned. The target `{{PROJECT_SLUG}}` checkout is per-dev: `REPO_PATH` in `.env`.)
+
+1. Read `ai/rules/new-task-bootstrap.md` to the end — the workspace map, empirical-Phase-1 commands, the taskctl lifecycle, anti-patterns, and the domain invariants.
+
+2. Read `CLAUDE.md` to the end (if not already this session) — where you are (this orchestration repo ≠ the target git repo), the target connection (`REPO_PATH`, `branches.integration = {{INTEGRATION_BRANCH}}`, tracker = {{TRACKER}}), the verified module map, and the current target state.
+   <!-- TODO: one line summarizing the target's current state (live/dead components, capital/traffic posture, active front). -->
+
+3. **GRACE awareness (every session):** read `grace/MODULE-INDEX.md` to the end — the module map (ID · STATUS · #edges · path · role) so you know where everything is before touching it. For the task's module, then open its `<M-ID>` contract in `grace/xml/docs/development-plan.xml` and its `CrossLink` edges (blast radius) in `grace/xml/docs/knowledge-graph.xml`. Read `grace/AI-BRIEF.md` for the mandatory module-lookup rule (find the module → blast-radius → contract → no-lookahead invariants → **trust code over docs**).
+   <!-- TODO: for any VM / infrastructure / deploy task, name the infra passport doc to read in full (host, services, ports, data dirs) and re-snapshot live state — it drifts. -->
+
+4. **Session-state monitor (every session — run FIRST):** `bash ops/session-state.sh`. It reports CURRENT state of **both repos** (this orchestration repo + the target `{{PROJECT_SLUG}}` at `$REPO_PATH`: branch, ahead/behind `origin/{{INTEGRATION_BRANCH}}`, dirty tree, branches incl. `{{GRACE_PILOT}}`), the **{{TRACKER}} tracker** (project `{{JIRA_KEY}}`), **GRACE/doc freshness** (`grace/check-freshness.sh`), and a data/infra heartbeat. Always confirm you're on current state before acting:
+   - If the **target/local checkout is stale** (behind `origin/{{INTEGRATION_BRANCH}}`), read the canonical source (`origin/{{INTEGRATION_BRANCH}}`) where accuracy matters — don't plan against −N stale code.
+   - If **GRACE drifted** (governed-path commits since the graph-gen date), flag it; when the task touches those modules, plan a cross-model GRACE-sync (re-read changed modules → reviewer verifies STATUS/edges — never a blind auto-edit). Keep the graph on `grace/xml/docs/`, but **account for its staleness**.
+   <!-- TODO: describe the project's data/infra heartbeat and what a stale reading means (e.g. autosync data old / collectors down / prod drift), and where to re-snapshot live state. -->
+
+5. Run the **Session Entry Protocol** from the playbook:
+   - verify `claude -p` auth (PONG, `is_error:false`) — if `Not logged in` / 401, the taskctl planner won't come up; fix auth first;
+   - **the target repo is READ-ONLY by default** — any `src/` change needs the user's explicit approve + a code-reviewer pass + the project's test gate GREEN; never touch protected `{{PR_TARGET}}` directly.
+   <!-- TODO: any project-specific read-only boundary (e.g. VM/prod is the dev's machine — read-only by default, no writes/restarts without explicit consent; re-snapshot live state when the task touches it). -->
+
+6. Internalise the hard rules: **reviewer = input, not authority** (verify every reviewer finding AND your own conclusions against real code / the live system, write an audit artifact, gate to APPROVE before advancing); read critical code-symbols yourself (Explore agents can hallucinate); don't infer behaviour from flag names (a flag reading "off" can hide a genuinely-live path — verify STATUS by entrypoint inventory, not config markers); the project's test gate must be GREEN before any commit; secret values never in chat / artifacts / git; trust the **code + GRACE graph over stale docs** (README / PROJECT_MAP / frozen memory layers describe a past epoch — ignore as a source).
+   <!-- TODO: the domain's no-lookahead / correctness invariants that can be violated SILENTLY (no failing test) — list them so they are read every session. -->
+
+7. Then summarise to the user in one short message (< 100 words): what you understood about the workspace, the current target state, and how you'll proceed. Then drive the task via the taskctl lifecycle, using `AskUserQuestion` for any branching decision / brainstorm.
+
+The user's task follows below. If no specific task is given, ask which task to start and offer target-focused options.
+<!-- TODO: seed the "which task?" options for this project (e.g. pick a module/candidate from the GRACE map, re-snapshot the VM, check data freshness, run a project tool). -->

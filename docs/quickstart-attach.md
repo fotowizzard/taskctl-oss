@@ -64,6 +64,10 @@ orchestration workspace.
 
 ## Next steps
 
+- **Scaffold the harness layer:** `taskctl init-harness` writes the operating contract, onboarding,
+  session-state monitor, GRACE skeleton and task playbook into the workspace (fills placeholders from
+  the config + `.env`; never overwrites your edits, `--dry-run` previews).
+  → [../docs/harness.md](../docs/harness.md)
 - If the defaults don't fit, edit `taskctl.config.json`:
   - `engines.{planner,reviewer}` — default `claude` / `codex`. A single-vendor
     setup (`planner:"claude", reviewer:"claude"`) is expressible and supported.

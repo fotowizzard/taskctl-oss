@@ -179,6 +179,7 @@ cd taskctl && npm test     # 313 tests, Node's built-in runner, zero deps
 
 ```
 taskctl attach <path-to-existing-repo>     # read-only profile → taskctl.config.json
+taskctl init-harness                       # scaffold the harness layer (contract, onboarding, monitor)
 taskctl new-project "<your idea>"          # idea → scaffold → backlog → attach
 ```
 
@@ -232,6 +233,20 @@ run them — it never executes engine-authored shell) → **backlog** (the idea 
 local tasks) → **self-attach** (a generated `taskctl.config.json`). The result is a
 self-contained workspace ready to run the lifecycle.
 → [docs/quickstart-new-project.md](docs/quickstart-new-project.md)
+
+### Scaffold the harness layer
+
+```
+taskctl init-harness [--name <project>] [--dry-run]
+```
+
+Once a workspace has a `taskctl.config.json` (from `attach` or `new-project`), `init-harness`
+materializes the **harness layer** — the operating contract (`CLAUDE.md`), onboarding (`SETUP.md`,
+`onboarding/`), a session-state monitor, a GRACE skeleton and the task playbook — filling the
+placeholders from the config, `.env` and the target's git remote. It **never overwrites**: absent
+files are written, unchanged files skipped, and a file you have edited is kept untouched;
+`--dry-run` previews.
+→ [docs/harness.md](docs/harness.md)
 
 ---
 

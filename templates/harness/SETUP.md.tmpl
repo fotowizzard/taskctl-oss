@@ -1,0 +1,96 @@
+# SETUP — running on another machine (developer onboarding, {{PROJECT_SLUG}})
+
+> Goal: after these steps your Claude Code works **identically** — run `/bootstrap` and go. Machine-specific
+> is only the contents of your `.env` (gitignored) + CLI authorization. None of that lands in git. Project /
+> role details — `CLAUDE.md`, `ai/rules/new-task-bootstrap.md`, `docs/taskctl.md`.
+
+## 0. Prerequisites (what to install)
+- **Node.js ≥ 20** and **git** — for `taskctl` (`node taskctl/cli.mjs`).
+- **`claude` CLI** (Claude Code), authorized (`claude` → `/login`) — the taskctl planner shells into it.
+- **`codex` CLI** (OpenAI Codex), authorized — the cross-model reviewer (`plan-review` / `review`).
+- **Python 3** on PATH — for `ops/session-state.sh` / tracker queries.
+- **bash** — on Windows use **Git Bash** for the `.sh` scripts.
+<!-- TODO: any project-specific tooling (e.g. a language runtime for the target, grace.exe for the GRACE gate, a vendored engine). -->
+
+## 1. Access the owner grants (once)
+- Collaborator access to the **orchestration repo** (this sidecar; private).
+- Membership in the **{{TRACKER}} project `{{JIRA_KEY}}`** (the owner adds members with equal rights).
+<!-- TODO: infra access — e.g. your SSH pubkey authorized on the target VM (read-only by default), dashboard creds you keep local. -->
+<!-- TODO: note anything that is the developer's OWN (target repo clone, their VM, their data, their local model) and requires no grant. -->
+
+## 2. Clone the repositories
+```bash
+# orchestration (your workspace; any directory)
+git clone <orchestration-repo-url>
+cd {{PROJECT_SLUG}}
+
+# target (the {{PROJECT}} code) — you clone your OWN checkout; work via worktree → PR
+git clone {{TARGET_REPO}}  /your/path/to/{{PROJECT_SLUG}}-target
+```
+
+> **Work cycle in the target = worktree → PR.** taskctl `run` makes changes in a **per-task git worktree**
+> (from `origin/{{INTEGRATION_BRANCH}}`); the finished branch goes **as a feature branch → PR into
+> `{{INTEGRATION_BRANCH}}`**. `{{INTEGRATION_BRANCH}}` is **protected** — direct push is forbidden. See §6.
+
+## 3. Configure `.env` (per-dev, gitignored)
+```bash
+cp .env.example .env
+```
+Fill in `.env` (the template without secrets is `.env.example`, committed; the real `.env` is not):
+- `REPO_PATH=/your/path/to/{{PROJECT_SLUG}}-target`  ← **set YOUR path** to the target checkout. taskctl
+  resolves `env REPO_PATH > config.repoPath > null`; an empty placeholder breaks the resolve.
+- `JIRA_BASE_URL=<your {{TRACKER}} base url>`
+- `JIRA_EMAIL=<your Atlassian email>`  ← **your personal** per-dev identity (NOT written to the shared config).
+- `JIRA_API_TOKEN=<your token>` — create at **https://id.atlassian.com/manage-profile/security/api-tokens** → Create API token.
+- `JIRA_PROJECT_KEY={{JIRA_KEY}}`
+
+> The engines (`claude` / `codex`) do **not** read API keys from `.env` — they are configured in each engine's own CLI (see §4).
+
+## 4. Authorize the engines
+- `claude` → `/login`. If it fails with `Not logged in` / 401 during a live login, a TUN/VPN proxy may be
+  swallowing the OAuth callback on `localhost`: turn TUN off for the login, or set `ANTHROPIC_API_KEY`.
+- `codex` → sign into your account.
+
+## 5. Verify (did everything come up)
+```bash
+# one monitor: both repos + {{TRACKER}} {{JIRA_KEY}} + GRACE freshness
+bash ops/session-state.sh
+
+# is the taskctl planner (claude -p) authorized?
+claude -p "Reply with exactly: PONG" --output-format stream-json --verbose 2>&1 | grep -oE '"(is_error|result)":[^,}]*' | tail -2
+#   expect: "is_error":false ... "result":"PONG"
+
+# taskctl sees the config
+node taskctl/cli.mjs status
+```
+`session-state.sh` should show your target by `REPO_PATH`, the {{JIRA_KEY}} tickets, and the GRACE delta.
+`node taskctl/cli.mjs status` should show your target by `REPO_PATH`.
+
+## 6. Start work
+Open a **Claude Code session at the sidecar root** (so `CLAUDE.md` auto-loads) and write:
+```
+/bootstrap
+take {{JIRA_KEY}}-XX            # or: create a ticket for <task description>
+```
+Then Claude (orchestrator-auditor): drives the taskctl cycle (plan → plan-review → run → review → publish) in
+full context, does not write the code/plan itself (engines + background agents), verifies findings and its own
+conclusions, asks about brainstorm decisions, moves the tracker ticket **only when a stage is truly complete**,
+and gates until APPROVE.
+
+**Delivery into the target = worktree → PR into `{{INTEGRATION_BRANCH}}`:** `run` works in a per-task worktree
+from `origin/{{INTEGRATION_BRANCH}}`; after `review`, `publish` opens the PR into {{PR_TARGET}}. `{{INTEGRATION_BRANCH}}`
+is **protected** — no direct push.
+
+## 7. Pitfalls (know these up front)
+- **A TUN/VPN proxy** intermittently breaks: `git push` (github over the tunnel), the OAuth callback (`localhost`),
+  IPv6. If `git push` / `/login` hang — add `github.com` / `localhost` to bypass/direct, or briefly disable TUN.
+- **The local target checkout can lag** `origin/{{INTEGRATION_BRANCH}}` — `session-state.sh` shows the delta; where
+  precision matters, read `origin/{{INTEGRATION_BRANCH}}` (or the deployed checkout).
+- **Delivery is worktree → PR into a protected `{{INTEGRATION_BRANCH}}`** (NOT direct push).
+- **Secrets** (tracker token, SSH key) — only in `.env` / local, never in git; before every push, secret-scan the staged diff.
+- **Identity is yours:** tracker / git / CLI / infra under your own accounts; shared are only the repos (sidecar) and the tracker-project membership.
+- **`codex exec` hangs on open stdin** — run `codex exec ... < /dev/null`.
+- **GRACE** is on `{{GRACE_PILOT}}` (not the integration branch) → plan/review run without GRACE injection; the module map is `grace/MODULE-INDEX.md`.
+<!-- TODO: project-specific pitfalls — e.g. machine-specific absolute paths in a helper file that must be edited on a fresh machine; files that must never be hand-edited (a settled judge, a ledger); infra read-only posture; how to fully restart a campaign. -->
+
+<!-- The `TODO:` markers above are the human-fill spots: replace each with project-specific prose before this file is authoritative. -->

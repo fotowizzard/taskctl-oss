@@ -40,6 +40,7 @@ import { renderTemplate, renderLocalState } from './templating.mjs';
 import { loadPromptPack } from './prompts/index.mjs';
 import { cmdDo, cmdFlow, cmdAutopilot, rolePair, runEngineStep } from './automation.mjs';
 import * as np from './newproject.mjs';
+import * as harness from './harness.mjs';
 import { parseAndValidate } from './newproject-schema.mjs';
 import { attachToConfigRoot, renderUnderstanding, gitIsWorkTree } from './profiler.mjs';
 import { getEngine, assertEngineRegistered } from './engines.mjs';
@@ -382,6 +383,15 @@ async function main() {
   // Load the config layer (taskctl.config.json + .env side effects). Never
   // throws on missing Jira creds — only resolves {repoPath, tracker}.
   const tcfg = await loadTaskctlConfig({ configRoot: ORCHESTRATION_ROOT, envPath: path.join(__dirname, '.env') });
+
+  // init-harness is a scaffolding BOOTSTRAP — dispatch it on the loaded config
+  // BEFORE strict runtime normalization, so an unrelated misconfig (grace.enabled
+  // without a repo root, a bogus engine name) can't block scaffolding. It reads
+  // only tcfg (repoPath/tracker + the raw branches/grace, each with its own fallback).
+  if (command === 'init-harness') {
+    await cmdInitHarness(args, tcfg);
+    return;
+  }
 
   // Build ONE normalized runtime config object and thread it everywhere (I1).
   // Resolves the grace block (+ repoRoot fallback) and validates an
@@ -3467,6 +3477,61 @@ function printTaskStatus(state) {
   console.log('');
 }
 
+/**
+ * `taskctl init-harness [--name <project>] [--dry-run]`
+ *
+ * Materialize the harness layer (operating contract, onboarding, session
+ * monitor, GRACE skeleton, task playbook) into THIS workspace from
+ * templates/harness/. {{PLACEHOLDER}}s are filled from taskctl.config.json +
+ * .env + the target's git remote; generic files (session monitor, freshness)
+ * ship config-driven. NEVER overwrites: a file that already exists and DIFFERS
+ * is KEPT (reported, untouched); absent files are written — idempotent + safe
+ * to re-run. `deps` (test-only) overrides workspaceRoot / templatesDir / gitRemote.
+ */
+async function cmdInitHarness(args, tcfg, deps = {}) {
+  const workspaceRoot = deps.workspaceRoot ?? ORCHESTRATION_ROOT;
+  const dryRun = args.includes('--dry-run');
+  const name = flagValue(args, '--name');
+
+  // Read straight from the loaded (un-normalized) config: repoPath + tracker are
+  // top-level; branches + grace come from the raw block. resolveHarnessVars fills
+  // any missing/partial value with a safe default, so a rough config still scaffolds.
+  const raw = tcfg?.raw ?? {};
+  const cfg = {
+    repoPath: tcfg?.repoPath ?? null,
+    tracker: tcfg?.tracker ?? { type: 'local' },
+    branches: raw.branches ?? {},
+    grace: raw.grace ?? {},
+  };
+  const repoPath = cfg.repoPath ? path.resolve(workspaceRoot, cfg.repoPath) : null;
+  const gitRemote = deps.gitRemote ?? harness.readGitRemote(repoPath);
+  const vars = harness.resolveHarnessVars(cfg, process.env, { workspaceRoot, name, gitRemote });
+
+  let summary;
+  try {
+    summary = await harness.materializeHarness({
+      workspaceRoot, vars, dryRun,
+      ...(deps.templatesDir ? { templatesDir: deps.templatesDir } : {}),
+    });
+  } catch (e) {
+    const msg = String(e?.message ?? e);
+    console.error(msg.startsWith('TASKCTL_EXIT:') ? `init-harness: ${msg.slice('TASKCTL_EXIT:'.length)}` : `init-harness: ${msg}`);
+    throw new Error('TASKCTL_EXIT');
+  }
+
+  const verb = dryRun ? 'would write' : 'wrote';
+  console.log(`\n✓ init-harness${dryRun ? ' (dry-run — nothing written)' : ''}`);
+  if (summary.written.length) console.log(`  ${verb} (${summary.written.length}):\n` + summary.written.map((d) => `    + ${d}`).join('\n'));
+  if (summary.keptExisting.length) console.log('  kept your existing (differs from template — untouched):\n' + summary.keptExisting.map((d) => `    ~ ${d}`).join('\n'));
+  if (summary.skippedIdentical.length) console.log(`  already current: ${summary.skippedIdentical.length} file(s)`);
+  if (!dryRun && summary.written.length) {
+    console.log('\n  Next: fill the `TODO:` markers in the rendered files (CLAUDE.md, SETUP.md, onboarding/…),');
+    console.log('  then restart your agent so CLAUDE.md + /bootstrap load automatically.');
+  }
+  console.log('');
+  return summary;
+}
+
 function printUsage() {
   console.log(`
 taskctl — AI-assisted development orchestrator
@@ -3520,6 +3585,9 @@ Automation:
 Onboarding:
   attach <repo> [--force]                  Analyze a repo (READ-ONLY) → write taskctl.config.json (sidecar)
                                            Refuses to clobber an existing config without --force
+  init-harness [--name <p>] [--dry-run]    Scaffold the harness layer (CLAUDE.md, SETUP.md, onboarding,
+                                           session monitor, GRACE skeleton, playbook) into this workspace.
+                                           Fills placeholders from config/.env; NEVER overwrites your edits.
 
 Utilities:
   deps CP-XXX                              Show dependency graph

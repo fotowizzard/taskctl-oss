@@ -1,0 +1,81 @@
+# Onboarding {{PROJECT}} — START HERE
+
+> Entry point for a new developer. This orchestration repo is a **local orchestration environment**
+> (built on `taskctl-oss`) that serves a target repo (`{{PROJECT_SLUG}}`) **read-only** through `taskctl`.
+> This is orientation and reading order; technical details live in the linked documents.
+
+> 🛠️ **Run first, read second.** The environment comes up in minutes. Walk through `SETUP.md`, then
+> come back here for understanding.
+
+---
+
+## What this project is (in 60 seconds)
+
+<!-- TODO: 2–4 sentences — what the target domain is, what this orchestration repo does for it, and the fact that this sidecar is NOT part of the target's git repo. -->
+
+**Key mental model:**
+```
+TODO: the domain's core mental-model diagram — the one framing that makes the
+      whole system make sense (the money path / the edge definition / the data flow).
+```
+
+<!-- TODO: one paragraph on the non-obvious truth of the domain (no data moat / rare-and-temporary edges / fail-safe execution gates / current-state posture) so a newcomer isn't misled. -->
+
+---
+
+## Reading order
+
+Read top to bottom; if short on time, read **★**.
+
+| # | Doc | About | When |
+|---|-----|-------|------|
+| ★ | [`../CLAUDE.md`](../CLAUDE.md) | Operational context of this orchestration repo: where things live, taskctl quick-start, review discipline, the target's real state, handoffs. | keep it open |
+| ★ | [`../SETUP.md`](../SETUP.md) | Step-by-step bring-up on a new machine (access, `.env`, engines, verification, first run, pitfalls). | when setting up |
+| ★ | [`../ai/rules/new-task-bootstrap.md`](../ai/rules/new-task-bootstrap.md) | The task playbook: workspace map, empirical Phase-1 commands, taskctl lifecycle, anti-patterns, precedents. | before the first task |
+<!-- TODO: add rows for the project's own docs (visual overview HTML, VISION, tool READMEs, GRACE module map / development-plan.xml + knowledge-graph.xml, infra passport). Mark the must-reads ★. -->
+
+---
+
+## "If you're doing X → read Y"
+
+| Task | Where to look |
+|------|---------------|
+| Understand the whole system at a glance | TODO: the visual-overview doc |
+| Run a task through taskctl (plan → review → run → review) | `CLAUDE.md` §taskctl + `SETUP.md` |
+| Set up the environment on a new machine | `SETUP.md` |
+<!-- TODO: add project-specific rows (understand the target's structure / what's live vs dead; run the project's tool; add a domain feature; work with infra/VM). -->
+
+---
+
+## Sources of truth (what to trust, what's stale)
+
+<!-- TODO: name the AUTHORITATIVE session-start source for the target (e.g. $REPO_PATH/current_state.md) and the read order after it. -->
+<!-- TODO: name the STALE sources to ignore (README / PROJECT_MAP / GOALS describing a past epoch; frozen memory layers that contradict current state) — read as history only. -->
+- The structural map you **can** trust is `grace/xml/docs/*.xml` (verified via systemd/launchd/cron entrypoints, not config markers) + `grace/MODULE-INDEX.md`.
+
+---
+
+## First steps (checklist)
+
+1. **Access granted** (§1 in `SETUP.md`): collaborator on this orchestration repo + membership in the {{TRACKER}} project (`{{JIRA_KEY}}`).
+2. **Environment up** (`SETUP.md`): Node ≥20, the project runtime, `claude`/`codex` authorized, `.env` filled (your own `REPO_PATH`, your own tracker identity).
+3. **Core verified without model/data** (`SETUP.md`):
+   ```bash
+   node taskctl/cli.mjs status                 # taskctl sees the target config
+   ```
+   <!-- TODO: the project's fast "does the core work on a fresh checkout?" commands (test suite, a stats/summary tool). -->
+4. **Read the visual overview + the operational context** — the overview doc, then `CLAUDE.md`.
+5. **First real run** (`SETUP.md`): the project's first-run command; open its output and confirm you understand the result.
+   <!-- TODO: the project's first-run command and the expected (possibly "empty / 0 confirmable is correct") outcome. -->
+6. **(When you reach the target)** read `grace/xml/docs/development-plan.xml` + `knowledge-graph.xml` (the module map), then the target's authoritative session-start file (not the stale README/PROJECT_MAP), and drive tasks through taskctl.
+7. **(AI discipline)** skim `grace/AI-BRIEF.md` — the module-lookup rule + no-lookahead invariants.
+
+---
+
+## Cross-cutting facts & pitfalls (matters from day one)
+
+- **Generator ≠ judge / reviewer = input, not authority.** The deterministic gate (tests / judge / cross-model review) is the source of honesty, not any single model — so a model can be weak or hallucinating but cannot fake a verdict.
+- **Trust code + graph over docs** — stale README / PROJECT_MAP / frozen memory layers describe a past epoch.
+- **The target is READ-ONLY**; `src/` changes need approve + reviewer + the test gate GREEN; `{{PR_TARGET}}` is protected.
+- **GRACE governance is on** (`grace/` + the pilot branch `{{GRACE_PILOT}}`). The AI-assistant discipline is in `grace/AI-BRIEF.md`.
+<!-- TODO: project-specific pitfalls (machine-specific absolute paths to fix; god-files to expect; name-spelling variants; simulated ≠ realized; live numbers drift; plaintext-secret hazard; Windows bash wrappers). -->

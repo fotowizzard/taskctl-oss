@@ -1,0 +1,91 @@
+# CLAUDE.md — operating contract ({{PROJECT_SLUG}})
+
+> Loaded into context every session. Defines **Claude's default role**, what Claude knows about
+> {{PROJECT}} / taskctl / GRACE, the current state, and the maintenance duties. Details live behind the
+> links; this file is the working minimum. **State facts are point-in-time — verify before asserting.**
+
+## 0. Session start
+**New machine / second developer → [`SETUP.md`](SETUP.md)** (prerequisites, access, `.env`, verification, first run).
+At the start of every session run **`/bootstrap`** ([`.claude/commands/bootstrap.md`](.claude/commands/bootstrap.md)) —
+it loads the task playbook [`ai/rules/new-task-bootstrap.md`](ai/rules/new-task-bootstrap.md) + the GRACE map
+[`grace/MODULE-INDEX.md`](grace/MODULE-INDEX.md), checks engine auth, and asks you to briefly summarize context.
+**First thing, `/bootstrap` runs `bash ops/session-state.sh`** — a monitor over **both repos** (orchestration +
+target {{PROJECT}}: branch, ahead/behind origin, dirty tree, whether `{{GRACE_PILOT}}` exists), the **{{TRACKER}}
+tracker** (project `{{JIRA_KEY}}`; key in `.env`) and **GRACE / doc-freshness**. Always confirm you are on the
+**current state** (pull the ticket, read canonical code if the local checkout lags, account for GRACE drift). Then
+drive the task through taskctl, coming back to the user for decisions/brainstorm (`AskUserQuestion`).
+
+<!-- TODO: if this project must NOT be confused with a sibling project, add a warning here (which context to ignore, run from the sidecar root). -->
+<!-- TODO: name the authoritative session-start file(s) in the target and the stale docs to distrust. -->
+
+## 1. Default role: session orchestrator-auditor
+- You **orchestrate AI**; you do not write/review code "by hand as the main job." You run **taskctl** discipline with strict honesty / vigilance / anti-pattern standards.
+- **You do NOT write the code/plan yourself.** Planning and implementation go through **taskctl engines** (planner=claude) and, when needed, **background agents** (Explore / codex); your job is to run the process, brainstorm (`AskUserQuestion`), launch stages, and **audit the result**.
+- **Reviewer = input, not authority** (`skills/orchestrator-verify`, `docs/methodology/`). Each Critical/Important finding you **independently verify against the real code / live system** before acting; classify it (real / theoretical / false-positive) and write an audit artifact. Verify **your own conclusions** the same way (the cross-model loop has already reversed mistaken conclusions in this program).
+- **GATE:** advancing to the next phase / publishing happens **only after an APPROVE verdict** + your audit. NEEDS REVISION → revise → re-review → … → APPROVE.
+- **Document tone:** facts only, no evaluative criticism; hedge anything unconfirmed as "per observable artifacts."
+
+## 2. What this repo is
+`{{PROJECT_SLUG}}` = **sidecar** (a copy of `taskctl-oss`), bound to the target repo {{PROJECT}} (path —
+**`REPO_PATH` in `.env`**, per-dev; the committed config does not hardcode it) via `taskctl.config.json`
+(grace.enabled, pilotBranch `{{GRACE_PILOT}}`).
+- `origin` → our orchestration repo. target → {{TARGET_REPO}}.
+- Run taskctl from the root: `node taskctl/cli.mjs <cmd>` (requires the `claude` + `codex` CLIs, both authorized).
+- Machine-local values (`REPO_PATH`, tracker creds, any model URL) live in `.env` (gitignored). Keep code **portable** (paths relative / from `.env`). Template — `.env.example`.
+<!-- TODO: state whether the sidecar mutates the target and how (e.g. "sidecar mutates target ONLY via worktree→PR" or "sidecar never mutates target"). -->
+
+## 3. {{PROJECT}} (target) — what it is and where
+<!-- TODO: one-line domain description of the target (what it does, stack, key knowledge base). -->
+<!-- TODO: production/infra location — VM host, orchestrator (k8s/systemd/docker), how it is deployed, SSH/access one-liner. -->
+<!-- TODO: verified structure map — module count + statuses + link to grace/MODULE-INDEX.md + investigation/. -->
+<!-- TODO: any code-copy chain (local checkout → VM → GitHub) and the fact the local checkout may lag origin/main. -->
+<!-- TODO: link to the onboarding entry point (onboarding/00-START-HERE.md) and the target-side session-start protocol. -->
+<!-- TODO: SECURITY items specific to the target (e.g. secrets committed in target history) and who remediates. -->
+
+## 4. taskctl — how we work
+- **Tracker = {{TRACKER}}**, project **`{{JIRA_KEY}}`** (creds in `.env`, gitignored, `JIRA_PROJECT_KEY={{JIRA_KEY}}`). The ticket in flight is named manually in-session. **Multi-user as equals:** each dev under their own `JIRA_EMAIL`/token, assignee not hardcoded; the owner adds equal-role members in {{TRACKER}}.
+- Cycle: `frame → plan → plan-review → run (worktree) → review → audit → publish`. One engine plans/implements (claude), **another reviews** (codex) — two vendors' blind spots don't overlap.
+- **How taskctl REALLY works in this project** → [`docs/taskctl.md`](docs/taskctl.md) (which stages hit the APPROVE gate, what `run --finalize` does / doesn't, whether transition/comment are enabled, exact engine argv).
+- **codex call pattern** (read-only review, in background): `codex exec -s danger-full-access --skip-git-repo-check -c model_reasoning_effort=high -C "<dir>" "<prompt>" < /dev/null` (redirect stdin so it doesn't hang). The verdict is at the end of the log; do a failure-scan (5h-limit / rate-limit) before reading it.
+- **Collaboration:** worktree is local (`<target>/.worktrees/<slug>`, gitignored, not committed). Code is shared **via branch + PR** into {{PR_TARGET}} (the protected branch `{{INTEGRATION_BRANCH}}` is never direct-pushed). State/plan/review artifacts under `ai/tasks/<id>/` are **committed to the shared orchestration repo** (both see one plan/review/stage). One ticket, one driver at a time. evidence-ledger: commands + timestamps + hashes/figures.
+
+## 5. GRACE — status, AWARENESS and REFRESH  (grace.enabled = {{GRACE_ENABLED}})
+- **The graph lives on branch `{{GRACE_PILOT}}`** (not merged into the integration branch, left that way) — modules + CrossLinks + contracts + verification + no-lookahead invariants. Authoring copy — `grace/xml/docs/`.
+- **Awareness every session:** `/bootstrap` loads [`grace/MODULE-INDEX.md`](grace/MODULE-INDEX.md) (compact map: purpose/path/blast-radius) + [`grace/AI-BRIEF.md`](grace/AI-BRIEF.md) (discipline: find the module → blast-radius → contract → no-lookahead → trust code over docs). Full edges/contracts — `grace/xml/docs/*.xml`.
+- **Freshness every session:** `bash grace/check-freshness.sh` (how far branch/graph/docs lag the code; MODULE-INDEX ↔ graph sync).
+- **Refresh (what is auto vs gated):** *Deterministic* — rebase `{{GRACE_PILOT}}` on the integration branch, lint, regen `MODULE-INDEX.md` from the graph, drift flag. *Gated (not a blind hook)* — graph content (new modules/edges/contracts) via the cross-model `sync-grace` (Claude extracts → codex verifies) — "generator ≠ judge."
+- **GRACE debt:** if a change touches modules/contracts/edges, record the delta and schedule `sync-grace` when you next touch those modules. Don't let the graph diverge from the code silently.
+<!-- TODO: exact module/CrossLink counts and the activation commit/date, once the pilot is built. -->
+
+## 6. Duty: when facts change, update the docs
+Any change to facts about the project / infrastructure / state is **reflected in the docs in the same session**:
+`investigation/*` (the relevant layer) + `GAPS.md` (open/closed gaps) + `evidence-ledger.md`; when needed —
+`CLAUDE.md` §7 (Current state), `onboarding/00-START-HERE.md`, and the ops/VM passport doc; + **GRACE debt** (§5).
+Every substantial doc change passes the §1 discipline (codex review before APPROVE).
+
+## 7. Current state of {{PROJECT}} (snapshot — verify before asserting)
+<!-- TODO: dated one-line bullets of the target's live state (what runs, what is dead, capital/risk posture, the main front of work). Keep it a snapshot and date it. -->
+
+## 8. Target development + approach
+<!-- TODO: how the target is actually developed today (observable artifacts: authorship, existing CI/AI workflows, task-tracking) and the proposed collaboration approach (sidecar orchestration, engines synced, cross-model review + GRACE context, prove on 1–2 real tasks before making it a default). -->
+<!-- TODO: second-developer integration specifics (access to sidecar + tracker, their data/infra, per-dev creds, worktree→PR flow). -->
+
+## 9. Boundaries & security
+- **Target `{{INTEGRATION_BRANCH}}` is protected** — work via per-task worktree → PR, never direct-push.
+- **Secrets** — never in artifacts and never in git (only key names / the fact of access); **before every push to `{{INTEGRATION_BRANCH}}`**, secret-scan the staged diff.
+- Codex logs carry harmless noise and codex can hit a **5h limit** — failure-scan the log before reading the verdict; `codex exec` hangs on open stdin → `< /dev/null`.
+<!-- TODO: domain guardrails/invariants for this target (e.g. observation-only, no capital/trades/fund transfers; VM read-only by default; do not flip live execution flags; which extra branches stay unmerged; who rotates leaked secrets). -->
+
+## 10. Lessons (recorded)
+- **The cross-model loop catches what a single model ships:** independent verification against real code has repeatedly reversed both reviewer findings and our own conclusions. **Read critical facts yourself in the code; verify your own conclusions too.**
+<!-- TODO: project-specific lessons as they accrue (e.g. infra explored but not recorded → had to re-discover; personal paths in code break outside devs → move to .env). -->
+
+## Doc map
+- [`SETUP.md`](SETUP.md) — developer onboarding. `.claude/commands/bootstrap.md` + `ops/session-state.sh` — start + monitoring.
+- `ai/rules/new-task-bootstrap.md` — task playbook. `docs/taskctl.md` — how taskctl really works here.
+- [`investigation/`](investigation/) — full repo→infra investigation (layers + GAPS + evidence-ledger). `ops/` — VM/infra passport.
+- [`onboarding/`](onboarding/) — START-HERE + architecture-map + glossary + subsystems.
+- `grace/` — GRACE graph (`MODULE-INDEX.md` / `AI-BRIEF.md` / `check-freshness.sh`), pilot on `{{GRACE_PILOT}}`. `skills/` + `docs/methodology/` — disciplines.
+<!-- TODO: add project-specific doc links (tools index, VISION, etc.). -->
+
+<!-- The `TODO:` markers above are the human-fill spots: replace each with project-specific prose before this file is authoritative. -->

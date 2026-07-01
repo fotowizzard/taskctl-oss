@@ -1,0 +1,126 @@
+# New Task Bootstrap — Session Playbook ({{PROJECT}})
+
+Self-contained playbook for starting any task in this workspace with the honesty / verification
+discipline this project runs on. Open the session **at the root of this orchestration repo** — so
+`CLAUDE.md` auto-loads — and invoke `/bootstrap`. Claude reads this file, refreshes context, and drives
+the task. This file **evolves**: after each task append a row to "Precedents" (keep it < 600 lines).
+
+---
+
+## Role & mode (brief; full version — `CLAUDE.md`)
+- You are an **orchestrator-auditor**: you drive the taskctl flow, launch background agents (cross-model
+  review, Explore), and turn to the user for decisions / brainstorming. AI writes and first-checks the
+  code; you are the discipline.
+- **Reviewer = input, not authority:** every reviewer finding (codex/other) AND **your own conclusion**
+  you verify against the real code / live system before accepting; you write an audit artifact.
+  **Gate: the next phase only after APPROVE.** (`--auto` / `flow` / `autopilot` skip the audit — a conscious trade-off.)
+- **Tone:** facts only, no evaluative criticism; code / plan / commits / taskctl artifacts in English.
+
+## Session Entry Protocol (before any edits)
+1. `CLAUDE.md` read (auto-loaded) — where you are (this repo ≠ the target git repo), the target connection, state, boundaries.
+2. **Verify engine auth** (else the taskctl planner silently won't come up):
+   ```
+   claude -p "Reply with exactly: PONG" --output-format stream-json --verbose 2>&1 | grep -oE '"(is_error|result)":[^,}]*' | tail -2
+   ```
+   Expect `"is_error":false … "result":"PONG"`. If `Not logged in` / 401 → see anti-pattern #3. The reviewer (codex/other) is checked by the review run itself.
+3. **Target READ-ONLY by default.** Any `src/` change to the target repo — only with the user's **explicit approve** + a code-reviewer pass + the project's test gate GREEN. `{{PR_TARGET}}` is protected — never direct-push.
+   <!-- TODO: any project-specific read-only boundary (e.g. VM/prod is the dev's machine — read-only by default, no writes/service restarts without explicit consent; re-snapshot live state when the task touches it). -->
+
+---
+
+## Workspace map (paths, access, tools)
+
+### Paths
+- **Orchestration (you are here):** the root of this repo (paths below are relative to it).
+  - `ai/tasks/<id>/` — per-task artifacts (`context.md`, `plan.md`, `state.json`, `review.md`, `audit-iterN.md`)
+  - `ai/rules/` — this playbook; `grace/` — GRACE graph + `MODULE-INDEX.md` + `check-freshness.sh`;
+    `ops/session-state.sh` — session-state monitor; `taskctl/cli.mjs` — the CLI.
+  <!-- TODO: project-specific orchestration paths (infra passport doc, tools/ subdirs, autosync data dir, etc.). -->
+- **Target (the code):** path in **`REPO_PATH`** (`.env`, per-dev) — `{{TARGET_REPO}}`. **The local copy may lag
+  origin/{{INTEGRATION_BRANCH}}** (the delta is shown by `ops/session-state.sh`) — where current-code accuracy matters, read `origin/{{INTEGRATION_BRANCH}}`.
+  <!-- TODO: the target's authoritative session-start file, if any (e.g. current_state.md), and the prod/live source of truth. -->
+- **GitHub:** target = `{{TARGET_REPO}}` (`{{PR_TARGET}}` is PROTECTED, not touched directly).
+  This orchestration repo's origin is private (commit `ai/tasks/<id>/` + context here).
+
+### Access & creds (secret VALUES never in chat, never in artifacts)
+| Resource | Where | Notes |
+|---|---|---|
+<!-- TODO: one row per resource (SSH key + host, DB access, dashboard, tracker creds location, LLM endpoint, engines planner/reviewer). Key NAMES / access facts only — never values. Seed rows: -->
+<!-- | engines | `claude` + reviewer CLI (`codex`) | planner=claude, reviewer=codex | -->
+<!-- | {{TRACKER}} (opt.) | `.env`: tracker vars incl. `JIRA_PROJECT_KEY={{JIRA_KEY}}` | tracker path availability per project | -->
+
+### Tools
+`Bash` / `PowerShell` (git / tests / project CLIs), `Grep/Glob/Read/Edit/Write`,
+`Agent` (Explore — broad read-only search; **can hallucinate symbols — re-read anything critical yourself**),
+`AskUserQuestion` (any branching decision / brainstorm), `TaskCreate/Update` (tracking multi-phase work),
+`WebFetch/WebSearch` (docs).
+<!-- TODO: platform notes (e.g. on Windows: tests/CLI via `py -3.13`; git-bash for `ops/*.sh`). -->
+
+---
+
+## Empirical Phase-1 — verified commands (live truth > docs > inference)
+
+**Target state (code / current-state) — delta of the local checkout vs origin:**
+```bash
+git -C "$REPO_PATH" fetch -q origin; git -C "$REPO_PATH" rev-list --left-right --count {{INTEGRATION_BRANCH}}...origin/{{INTEGRATION_BRANCH}}
+```
+
+<!-- TODO: the project's verified Phase-1 commands — the test gate (must be GREEN before commit), any correctness/lookahead validator, data/infra probes (SSH heredocs, DB queries, tool status). live truth > docs > inference. -->
+
+**GRACE graph / freshness:**
+```bash
+bash grace/check-freshness.sh              # target-code drift since graph-gen date + MODULE-INDEX↔plan sync + xml well-formed
+# module by file path: grace/MODULE-INDEX.md (fast) -> <M-ID> contract in grace/xml/docs/development-plan.xml
+```
+
+## Cross-model review (codex) — pattern
+```bash
+codex exec -s danger-full-access --skip-git-repo-check -c model_reasoning_effort=high -C "<dir>" "<prompt>" < /dev/null 2>&1 | tee ai/tasks/<id>/codex-<stage>-run.log
+```
+Run it **in the background** (`run_in_background`); `< /dev/null` so it doesn't hang on open stdin. After the run:
+**failure-scan** the log FIRST (usage / rate-limit — a 5-hour limit; harmless noise like `ConstrainedLanguage`)
+→ then read the verdict `VERDICT: APPROVE` / `NEEDS REVISION` at the end. **Verify each finding against the code**,
+write `audit-iterN.md`, repeat until APPROVE. Discipline — `skills/orchestrator-verify`, `docs/methodology/`.
+
+## taskctl lifecycle (tracker = **{{TRACKER}}**, project **`{{JIRA_KEY}}`**)
+`taskctl.config.json` sets `tracker={{TRACKER}}`. `taskctl` = `node taskctl/cli.mjs` (from this repo's root).
+```bash
+node taskctl/cli.mjs new <slug>            # local task -> ai/tasks/<id>/context.md + state.json
+node taskctl/cli.mjs do plan <id>          # planner(claude) writes plan.md -> read it
+node taskctl/cli.mjs do plan-review <id>   # reviewer(codex) reviews -> you VERIFY findings -> revise -> APPROVE
+node taskctl/cli.mjs do run <id>           # implementation in a per-task git worktree (from origin/{{INTEGRATION_BRANCH}})
+node taskctl/cli.mjs do review <id>        # cross-model code-review of the diff -> audit -> fix-loop -> APPROVE
+node taskctl/cli.mjs status [<id>]
+```
+- `plan.md` must contain the line **`Verdict: APPROVE`** before `run`.
+- `publish` / `autopilot` require a working {{TRACKER}} tracker; the PR into protected `{{PR_TARGET}}` is a feature-branch → PR with the user's explicit OK.
+<!-- TODO: how taskctl REALLY works in this project (tracker path exercised or not yet; who moves statuses; the stage→status mapping if a live tracker; the GRACE gate on the pilot branch {{GRACE_PILOT}}, grace.enabled={{GRACE_ENABLED}}). -->
+
+## Maintenance duties
+- **Infra / state docs:** VM/infra changed → reflect it in the infra passport doc (same session); target onboarding stack changed → reflect it in the onboarding docs.
+- **GRACE debt:** an edit touches modules / contracts / edges → record the delta (what to update under `grace/xml/_parts/*`; rebuild via `grace/xml/assemble.py`, don't hand-edit `xml/docs/*` directly) for the next sync.
+- **Before pushing to this repo's `{{PR_TARGET}}`** — secret-scan the staged diff (`git diff --cached | grep -iE "BEGIN|PRIVATE KEY|api_?key|secret|token"`).
+- **Trust code + graph over docs:** README / PROJECT_MAP / frozen memory layers describe a past epoch — read them as history.
+<!-- TODO: project-specific maintenance duties (which investigation/ops docs to keep current). -->
+
+---
+
+## Anti-patterns (lessons + invariants)
+1. **The Explore agent can invent a symbol.** Re-read critical code-symbol attributions yourself (`grep -c`), don't trust the retelling.
+2. **Don't trust inference from flag names.** A flag reading "off" can hide a genuinely-live path — verify STATUS by the entrypoint inventory (systemd / launchd / cron / `__main__` / Docker), not config markers.
+3. **`claude -p` 401 / `Not logged in`** while an interactive claude is alive → fix auth before the taskctl cycle (the planner silently won't come up otherwise).
+4. **codex logs are noisy** (`ConstrainedLanguage`, `failed to record rollout items`) — harmless; failure-scan for the 5h-limit, then read the verdict at the end.
+5. **The local target checkout can lag origin/{{INTEGRATION_BRANCH}}** (the delta is shown by `ops/session-state.sh`) — for accuracy read origin.
+6. **Target READ-ONLY**; `src/` — only with approve + reviewer + the test gate GREEN. `{{PR_TARGET}}` is protected, never direct-push.
+<!-- TODO: project-specific anti-patterns and domain invariants (e.g. simulated ≠ realized; lookahead leaks silently; live numbers drift — snapshot point-in-time; plaintext-secret hazards; VM/collector downtime = a forward-only data gap). -->
+
+## When the playbook is NOT needed
+- A pure read-only question ("what does module X do?") — answer from `MODULE-INDEX.md` / the code, no taskctl cycle.
+- An orchestration-repo doc edit / small change — a direct edit (but a push to this repo's `{{PR_TARGET}}` is after a secret-scan).
+- For a bugfix / feature / refactor in the target — the full cycle (worktree → review → PR with approve).
+
+## Precedents (templates)
+| Date | What | Lesson |
+|---|---|---|
+<!-- TODO: append one row per completed task. Seed row: -->
+| TODO: date | TODO: onboarding + structural audit of the target (module map snapshot) | TODO: verify STATUS by entrypoint inventory, not config markers. |
