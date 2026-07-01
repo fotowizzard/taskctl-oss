@@ -213,7 +213,7 @@ node taskctl/cli.mjs --help
 cd taskctl && npm test     # 325 tests, Node's built-in runner, zero deps
 ```
 
-**3 · Point it at your work** — two entry paths (detailed in *Two ways in* below):
+**3 · Point it at your work** — pick an entry path (see *Ways in* below):
 
 ```
 taskctl attach <path-to-existing-repo>     # read-only profile → taskctl.config.json
@@ -238,7 +238,7 @@ rhythm, one stage at a time, *is* the methodology; the chained automations (`flo
 
 ---
 
-## Two ways in
+## Ways in
 
 ### Attach to an existing repo (read-only)
 
@@ -271,6 +271,20 @@ run them — it never executes engine-authored shell) → **backlog** (the idea 
 local tasks) → **self-attach** (a generated `taskctl.config.json`). The result is a
 self-contained workspace ready to run the lifecycle.
 → [docs/quickstart-new-project.md](docs/quickstart-new-project.md)
+
+### Work as a team on one repo (a shared sidecar)
+
+Several developers can share one **orchestration sidecar** (a copy of taskctl) that drives a single
+target repo. Each keeps their own identity — their own `.env` (their local checkout via `REPO_PATH`,
+their own tracker account + token, their own engine-CLI auth); nothing is hard-wired to one account
+(`tracker.assigneeEmail` is left unset, so `publish` never auto-assigns for someone else). The only
+shared things are the sidecar repo (config, task plans/reviews, the harness) and the target repo.
+
+Code is shared through the target's **branches + PRs** — a per-task worktree → PR into the integration
+branch, never a direct push (by convention; taskctl doesn't enforce a protected branch). Task state,
+plans, and review artifacts are committed to the shared sidecar, and a tracker coordinates who is on
+what, with **one ticket, one driver**. A new teammate onboards from the scaffolded `SETUP.md`: clone
+the sidecar, fill their own `.env`, and their session loads its role from `CLAUDE.md` + `/bootstrap`.
 
 ### Scaffold the harness layer
 
