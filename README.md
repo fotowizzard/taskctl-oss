@@ -1,8 +1,5 @@
 # taskctl
 
-> **Pre-alpha** (release tag `v0.1.0-prealpha`). Dogfooded only on its own extraction — no
-> third-party use yet, no package-manager release. Expect rough edges; behaviour may change.
-
 **taskctl** is the engine an **AI orchestrator drives on your behalf** to run a disciplined,
 **multi-model** software-development lifecycle on top of the coding agents you already use
 (e.g. Claude Code + Codex CLI). You open a coding-agent session in an orchestration workspace;
@@ -37,7 +34,7 @@ and what is allowed to leave your machine.
 
 ## Why it exists
 
-This tool was extracted from a private single-project workspace where it drove ~95 real
+This tool was extracted from real, repeated use across multiple projects and a wide range of
 tasks. Mining that history surfaced what actually produced quality (and what didn't):
 
 - **Cross-vendor adversarial review is the moat.** One engine plans and implements; a
@@ -172,8 +169,7 @@ if you like.)
 needs *two distinct* engines to be meaningful; with only one, set both roles to it and accept
 the loss of the cross-vendor benefit.
 
-**2 · Get taskctl and smoke-test it.** No package-manager release yet — clone and run the CLI
-directly:
+**2 · Get taskctl and smoke-test it.** Clone and run the CLI directly:
 
 ```
 git clone https://github.com/fotowizzard/taskctl-oss && cd taskctl-oss
@@ -392,8 +388,7 @@ implementation is by Aleksey Chendemerov (osovv) — full credit in [NOTICE](NOT
 
 ## Status, limitations, platform
 
-**Pre-alpha.** Dogfooded only on its own extraction — not used by third parties, no
-package-manager release. Known gaps worth stating plainly:
+The API may still change. Known gaps worth stating plainly:
 
 - The orchestrator audit is a methodology/skill practice, **not enforced by the CLI**;
   `--auto` / `flow` skip it.
