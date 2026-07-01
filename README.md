@@ -172,7 +172,7 @@ directly:
 ```
 git clone https://github.com/fotowizzard/taskctl-oss && cd taskctl-oss
 node taskctl/cli.mjs --help
-cd taskctl && npm test     # 313 tests, Node's built-in runner, zero deps
+cd taskctl && npm test     # 325 tests, Node's built-in runner, zero deps
 ```
 
 **3 · Point it at your work** — two entry paths (detailed in *Two ways in* below):
