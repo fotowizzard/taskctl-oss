@@ -382,6 +382,32 @@ annotated version):
 across machines. Jira credentials and `JIRA_PROJECT_KEY` are **env-only**, never JSON — see
 [`.env.example`](.env.example).
 
+### Configured values that reach a command line are checked, and a bad one refuses
+
+`repoPath` (and `REPO_PATH`), the `branches.*` names, `engines.*`, and the `grace.*` root and
+branches all end up in an argv element or in a command taskctl prints for you to paste. Each is
+validated when the config is loaded, against a conservative allow-list — letters, digits, and
+`. _ - : / \` — and a value outside it makes the command **refuse**, not warn: continuing would
+mean running the text. The message names the key, the file to edit, the rejected character, and
+where the value was going. This matters the first time you run taskctl in a repository you did
+not write, because `taskctl.config.json` is a committed file.
+
+**Paths may contain spaces.** `repoPath`, `REPO_PATH` and `grace.repoRoot` accept a space, so
+`C:\Users\First Last\repo` and `C:\Program Files\…` are fine. The other values do not accept
+one: git forbids spaces in branch names anyway, and `engines.reasoningEffort` reaches a position
+where a space would split the argument.
+
+Free-text fields — `projectContext`, `constraints`, `codeAreas`, `previewUrlTemplate`,
+`tracker.assigneeEmail` — are **not** checked: they reach prompt text, a URL, or an HTTP
+request body, never a command line.
+
+**What this does not close:** the engine spawn still runs through a shell (npm installs the
+engine CLIs as Windows `.cmd` shims, which Node will not spawn without one), and values that come
+from CLI arguments or from task artifacts rather than from configuration are not covered. See
+[limitations](docs/limitations.md#launch-value-validation-what-it-covers-and-what-it-does-not).
+If the rule rejects an identifier that is genuinely valid, the fix is not to widen it — open an
+issue against the check; the refusal message says so and explains why.
+
 ---
 
 ## Methodology & skills
@@ -447,6 +473,12 @@ The API may still change. Known gaps worth stating plainly:
   runs the lifecycle up to review, then commits/PRs by hand.
 - Per-role *model* selection isn't configurable; worktree isolation falls back to local refs /
   the main repo when fetch or worktree creation fails.
+- **The engine spawn still goes through a shell**, and so, unavoidably, do the commands taskctl
+  prints for you to paste. Configured values are validated before they reach either (above), but
+  that narrows the *inputs* — it does not remove the shell, and it does not cover values sourced
+  from CLI arguments or from task artifacts. The git, `gh` and `grace` invocations no longer use
+  one. See
+  [limitations](docs/limitations.md#launch-value-validation-what-it-covers-and-what-it-does-not).
 
 [docs/limitations.md](docs/limitations.md) is the fuller accounting (recognised env vars,
 deliberate exceptions); [docs/plans/ROADMAP.md](docs/plans/ROADMAP.md) has the phased build.

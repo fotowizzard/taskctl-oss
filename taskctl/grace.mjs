@@ -38,6 +38,7 @@ import fsSync from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { assertLaunchValue } from './launch-safety.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -125,15 +126,55 @@ function buildGraceSpawnEnv() {
  * @param {string} repoRoot
  * @returns {{ status: string, summary: string, output: string }}
  */
-function runGraceLintOnce(profile, repoRoot) {
+// P2 (#22): the destination this module's configured value travels to, named
+// once because two call-sites below assert against it.
+//
+// ROUND 2 CHANGED THIS SPAWN. It was the worst sink in the round-1 inventory:
+// `--path <repoRoot>` was an argv element in a `shell: true` spawn, and Node
+// joins that array into a single command string WITHOUT quoting it, so a space
+// alone split the path into two arguments and a ";" ended the command. The
+// containment for that was a rule refusing the space — which refused
+// `C:/Users/First Last/repo` along with it. It is now `shell: false`, so `args`
+// is a real argument vector: there is no command string, no word-splitting, and
+// no quoting question. A space in the path is now just a space in the path.
+const GRACE_LINT_SITE = '`grace lint --path <value>` — one element of an argument vector, spawned with NO shell';
+
+// `spawn` is injectable for the same reason `detectRepoBranch` is: the argument
+// VECTOR is the containment now, so a test has to be able to see it. Proving
+// "the path arrives as one element" by installing grace and reading its stdout
+// would prove it for one machine's grace; recording the call proves it for the
+// call. Defaults to the real spawnSync, so nothing in production reads this.
+function runGraceLintOnce(profile, repoRoot, spawn = spawnSync) {
+  // The check goes BEFORE the try below: that catch turns a spawn failure into a
+  // soft `{status:'error'}`, which runGraceGate then degrades to
+  // `skipped-no-grace`, and a refusal that arrives as a skip is the fail-open
+  // this deliverable exists to remove. It stays even though the spawn is now
+  // shell-free, because shell syntax was never the only exposure here — a
+  // repoRoot beginning with "-" is read by grace as an option, not as a path.
+  assertLaunchValue(repoRoot, { key: 'grace.repoRoot', site: GRACE_LINT_SITE });
+
   const env = buildGraceSpawnEnv();
   let proc;
   try {
-    proc = spawnSync(
+    proc = spawn(
       'grace',
       ['lint', '--profile', profile, '--path', repoRoot, '--format', 'json'],
       {
-        shell: true,
+        // NO SHELL (P2 #22). The shell was here for executable RESOLUTION, not
+        // for any shell feature — the header on buildGraceSpawnEnv says so: bun
+        // installs `grace.exe` under ~/.bun/bin and a plain node process may not
+        // have that on PATH. Resolution is what `env` above is for, and it is
+        // the correct tool for it: libuv searches the CHILD's PATH, so the
+        // augmented PATH resolves `grace` → `grace.exe` with no shell involved.
+        //
+        // The one thing this gives up is a `grace` installed as a Windows .cmd
+        // /.bat shim rather than an .exe: Node 22 refuses to spawn those without
+        // a shell. Such an install now reports "grace CLI not found on PATH" and
+        // the gate degrades to skipped-no-grace, exactly as a missing binary
+        // does. That is the price of the argument vector, and it is worth it
+        // here — grace is optional and its absence is already a supported state,
+        // whereas a repo path that cannot contain a space is not.
+        shell: false,
         encoding: 'utf8',
         env,
         // grace lint on a full repo runs in well under a minute; cap at
@@ -154,15 +195,25 @@ function runGraceLintOnce(profile, repoRoot) {
   const combined = out + (errText ? `\n[stderr]\n${errText}` : '');
 
   if (proc.error) {
+    // Without the shell, "grace isn't installed" arrives as a spawn errno
+    // instead of as shell chatter on stderr, so name it the same way the stderr
+    // branch below does. ENOENT is nothing on PATH; EINVAL is Node 22 refusing a
+    // Windows .cmd/.bat shim without a shell (see the shell:false note above) —
+    // for the operator both mean "no usable grace here", and both must reach
+    // runGraceGate's `/not found|spawn/` test as a skip rather than a failure.
+    const missing = proc.error.code === 'ENOENT' || proc.error.code === 'EINVAL';
     return {
       status: 'error',
-      summary: `spawn error: ${proc.error.message}`,
+      summary: missing
+        ? `grace CLI not found on PATH (${proc.error.code})`
+        : `spawn error: ${proc.error.message}`,
       output: combined,
     };
   }
 
-  // ENOENT via shell on Windows surfaces as "is not recognized" on stderr
-  // with a non-zero exit; detect and report as skip-with-warning.
+  // Kept for the shell-resolved shapes that predate the shell:false conversion
+  // and for any wrapper that still prints them: a shell reports a missing binary
+  // on stderr with a non-zero exit rather than as a spawn errno.
   if (/is not recognized as an internal or external command/i.test(errText) ||
       /command not found/i.test(errText)) {
     return {
@@ -267,7 +318,15 @@ function runPythonXmlGate(repoRoot) {
 
   const tryRun = (useShell) => {
     try {
-      return spawnSync('python', [scriptPath], {
+      // `scriptPath` is under os.tmpdir(), which on Windows sits inside the
+      // user's profile — so it contains a space whenever the account name does
+      // ("C:\Users\First Last\AppData\Local\Temp\…"). On the shell retry Node
+      // joins the argv into one command string without quoting, which split that
+      // path in two and ran `python C:\Users\First` instead. Quoting it here is
+      // safe unconditionally: this path is ours, generated by mkdtempSync, and
+      // cannot contain a quote. The no-shell attempt takes it bare, as an argv
+      // element, where quoting it would make the quotes part of the filename.
+      return spawnSync('python', [useShell ? `"${scriptPath}"` : scriptPath], {
         cwd: repoRoot,
         shell: useShell,
         encoding: 'utf8',
@@ -356,8 +415,20 @@ function runPythonXmlGate(repoRoot) {
  *   },
  * }>}
  */
-export async function runGraceGate(repoRoot, pilotBranch = GRACE_PILOT_BRANCH, detectRepoBranch = defaultDetectRepoBranch) {
+export async function runGraceGate(
+  repoRoot,
+  pilotBranch = GRACE_PILOT_BRANCH,
+  detectRepoBranch = defaultDetectRepoBranch,
+  { spawn = spawnSync } = {},   // P2 (#22): test seam onto the lint spawn — see runGraceLintOnce
+) {
   const ranAt = new Date().toISOString();
+
+  // P2 (#22): refuse before the presence check below, not after. A path carrying
+  // a metacharacter almost never exists as a directory, so the existsSync arm
+  // would return `skipped-no-repo` first and the refusal in runGraceLintOnce
+  // would never be reached — the value would be reported as a benign skip
+  // instead of as the injection attempt it is.
+  assertLaunchValue(repoRoot, { key: 'grace.repoRoot', site: GRACE_LINT_SITE });
 
   // Repo presence check first — the rest of the gates don't make sense
   // if the repo directory isn't there.
@@ -388,8 +459,8 @@ export async function runGraceGate(repoRoot, pilotBranch = GRACE_PILOT_BRANCH, d
     };
   }
 
-  const standard = runGraceLintOnce('standard', repoRoot);
-  const autonomous = runGraceLintOnce('autonomous', repoRoot);
+  const standard = runGraceLintOnce('standard', repoRoot, spawn);
+  const autonomous = runGraceLintOnce('autonomous', repoRoot, spawn);
   const pythonXml = runPythonXmlGate(repoRoot);
 
   // Grace CLI missing → graceful degrade (skip, don't fail).

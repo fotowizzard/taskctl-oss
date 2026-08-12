@@ -18,7 +18,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import fsSync from 'node:fs';
-import { execSync as execSyncTop, spawnSync } from 'node:child_process';
+import { execSync as execSyncTop, execFileSync, spawnSync } from 'node:child_process';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { JiraClient } from './jira-client.mjs';
@@ -44,6 +44,7 @@ import * as harness from './harness.mjs';
 import { parseAndValidate } from './newproject-schema.mjs';
 import { attachToConfigRoot, renderUnderstanding, gitIsWorkTree } from './profiler.mjs';
 import { getEngine, assertEngineRegistered } from './engines.mjs';
+import { assertLaunchValue, quoteForPastedCommand } from './launch-safety.mjs';
 import { resolveWorkspaceRoot, workspaceBundle, INSTALLATION_ROOT } from './workspace.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -185,7 +186,15 @@ function buildJiraTrackerDeps(jiraCreds, ctxOpts = {}) {
 function ensureWorktree(repoPath, branchName, slug, baseBranch = 'dev') {
   const wtRoot = path.join(repoPath, '.worktrees');
   const wtDir = path.join(wtRoot, slug);
-  const run = (cmd) => execSyncTop(cmd, { cwd: repoPath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+  // P2 (#22): argv, not a command string. Every one of these used to be built by
+  // concatenation and handed to execSync, which is a shell — so `wtDir`, which
+  // is derived from the configured `repoPath`, was shell syntax. `git` is a real
+  // executable on every platform we run on (it is `git.exe` on Windows, not an
+  // npm .cmd shim), so it spawns with no shell at all and there is nothing left
+  // to quote or to word-split. This is what lets repoPath contain a space.
+  const run = (...gitArgs) => execFileSync('git', gitArgs, {
+    cwd: repoPath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
+  }).trim();
 
   // Already exists — just return
   try {
@@ -198,17 +207,21 @@ function ensureWorktree(repoPath, branchName, slug, baseBranch = 'dev') {
   // frequently behind `origin/dev`, which otherwise yields a wrong PR diff and a
   // stale Coolify preview. Falls back to the local ref when offline / no remote.
   let resolvedBase = baseBranch;
-  try { run(`git rev-parse --verify ${branchName}`); }
+  try { run('rev-parse', '--verify', branchName); }
   catch {
-    try { run(`git fetch origin ${baseBranch}`); } catch { /* offline / no remote — fall back to local base */ }
-    try { run(`git rev-parse --verify origin/${baseBranch}`); resolvedBase = `origin/${baseBranch}`; }
+    try { run('fetch', 'origin', baseBranch); } catch { /* offline / no remote — fall back to local base */ }
+    try { run('rev-parse', '--verify', `origin/${baseBranch}`); resolvedBase = `origin/${baseBranch}`; }
     catch { /* no remote-tracking ref — use local base */ }
-    run(`git branch ${branchName} ${resolvedBase}`);
+    run('branch', branchName, resolvedBase);
   }
 
-  // Create worktree
+  // Create worktree. `wtDir` goes in raw — no forward-slashing and no quotes.
+  // Both of those existed to survive a shell: the quotes so a space would not
+  // split the argument, the slash rewrite so a trailing backslash would not
+  // escape the closing quote. There is no shell here, so the argument is the
+  // path exactly as the filesystem spells it.
   fsSync.mkdirSync(wtRoot, { recursive: true });
-  run(`git worktree add "${wtDir.replace(/\\/g, '/')}" ${branchName}`);
+  run('worktree', 'add', wtDir, branchName);
   console.log(`  Created worktree: ${wtDir} (base: ${resolvedBase})`);
   return wtDir;
 }
@@ -219,7 +232,10 @@ function ensureWorktree(repoPath, branchName, slug, baseBranch = 'dev') {
 function removeWorktree(repoPath, slug) {
   const wtDir = path.join(repoPath, '.worktrees', slug);
   try {
-    execSyncTop(`git worktree remove "${wtDir.replace(/\\/g, '/')}" --force`, {
+    // P2 (#22): argv, for the same reason as ensureWorktree above — this path is
+    // derived from the configured repoPath and used to be concatenated into a
+    // string that a shell parsed.
+    execFileSync('git', ['worktree', 'remove', wtDir, '--force'], {
       cwd: repoPath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
     });
     console.log(`  Removed worktree: ${wtDir}`);
@@ -227,6 +243,15 @@ function removeWorktree(repoPath, slug) {
     console.warn(`  ⚠ Could not remove worktree: ${err.message}`);
   }
 }
+
+// P2 (#22) test seam. These two moved from concatenated execSync command STRINGS
+// to execFileSync argv, which is what lets a configured repoPath contain a space.
+// The evidence for that has to be a real `git worktree add` under a real spaced
+// directory — a recorded call would re-assert the code rather than test it — so
+// the suite needs to reach them. Exported under _-prefixed names, the convention
+// engines.mjs already uses for `_unregisterEngineForTest`.
+export const _ensureWorktreeForTest = ensureWorktree;
+export const _removeWorktreeForTest = removeWorktree;
 
 /**
  * Resolve working directory: use worktree if set, otherwise fallback to repoPath.
@@ -263,6 +288,70 @@ async function resolveRepoPR(state, taskDir, repoPath) {
       console.log(`  Auto-resolved from PR-${prNumber}: branch=${state.branch}, PR=${state.activePR}`);
     }
   } catch { /* no context.md, no gh, or parse error — skip silently */ }
+}
+
+/**
+ * Ask the local `claude` CLI to write the Jira-comment summary, given a prompt
+ * assembled from the task's OWN ARTIFACTS (plan.md, progress.md, review.md).
+ * Returns the generated text, or null if anything at all went wrong — the caller
+ * has a fallback and this must never be the reason a publish fails.
+ *
+ * P2 (#22), the artifact-injection fix. This was:
+ *
+ *     execSync(`claude -p ${JSON.stringify(summaryPrompt)} --verbose`)
+ *
+ * and `JSON.stringify` is JSON quoting, not shell quoting. It escapes `"` and
+ * `\` and does nothing else, while the string it produces is handed to a shell
+ * to parse. On a POSIX shell a backtick or `$(…)` inside those quotes is command
+ * substitution and runs. On cmd.exe it is worse: cmd.exe does not recognise `\"`
+ * as an escaped quote at all, so JSON's own escaping CLOSES the quoted section
+ * and everything after it — `&`, `|`, `>` — is read as command syntax. Either
+ * way, prose that a person or an engine wrote into review.md executed.
+ *
+ * The fix is not better quoting. It is that the text never touches a command
+ * line: the prompt goes to the child's STDIN, and argv is three constants. There
+ * is no serialization to get right because there is no serialization.
+ *
+ * WHY THE SHELL FALLBACK IS STILL SAFE. `claude` is installed by npm, which on
+ * Windows writes a `.cmd` shim that Node 22 refuses to spawn without a shell, so
+ * shell:false alone would mean no summary on Windows ever. We try it first
+ * anyway — on POSIX, and for a real .exe install, it is a plain argument vector
+ * — and fall back to the shell only when the platform leaves nothing else. The
+ * fallback is safe for the reason the original was not: the command line is
+ * `claude -p --verbose`, three literals, with no value interpolated into it.
+ * A shell parsing that string can only find the command we wrote.
+ *
+ * @param {string} summaryPrompt      prompt text, assembled from task artifacts
+ * @param {object} [deps]
+ * @param {Function} [deps.spawn]     spawnSync seam (tests inject a recorder)
+ * @returns {string|null}
+ */
+export function generateJiraSummary(summaryPrompt, { spawn = spawnSync } = {}) {
+  const attempt = (useShell) => spawn('claude', ['-p', '--verbose'], {
+    input: summaryPrompt,          // ← the artifact text, off the command line
+    encoding: 'utf8',
+    timeout: 30_000,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    shell: useShell,
+  });
+
+  let proc;
+  try {
+    proc = attempt(false);
+    // ENOENT: nothing on PATH under that bare name (the npm shim is
+    // extensionless-unspawnable). EINVAL: Node 22 refusing a .cmd/.bat without a
+    // shell. Both mean "this platform will not spawn it directly" — not "it is
+    // missing" — so retry through the shell with the same constant argv.
+    if (proc?.error && (proc.error.code === 'ENOENT' || proc.error.code === 'EINVAL')) {
+      proc = attempt(true);
+    }
+  } catch {
+    return null;
+  }
+
+  if (!proc || proc.error || proc.status !== 0) return null;
+  const out = String(proc.stdout ?? '').trim();
+  return out.length > 10 ? out : null;
 }
 
 /**
@@ -1777,7 +1866,13 @@ async function cmdReview(issueKey, args, rcfg = null) {
     console.log(`  > ${finalReviewPromptCmd}`);
   }
   if (reviewPlacement.writesToCwd) {
-    console.log(L.codexAutoSaveNote(`review ${issueKey} --repo-path ${repoPath}`));
+    // P2 (#22): quoted for the same reason as automation.mjs's publish hint —
+    // this is a command a person pastes into a shell of their choosing, and bare
+    // it broke on any repo path with a space in it.
+    console.log(L.codexAutoSaveNote(`review ${issueKey} --repo-path ${quoteForPastedCommand(repoPath, {
+      key: 'repoPath',
+      site: 'the `taskctl review … --repo-path` command printed for you to paste into your own shell',
+    })}`));
   }
   console.log(c.afterHeader);
   console.log(c.finalizeLine);
@@ -2097,19 +2192,19 @@ async function cmdPublish(config, issueKey, args, rcfg = null) {
       ].filter(Boolean).join('\n');
 
       let summaryText = commitSummary; // fallback
-      try {
-        const summaryResult = execSyncTop(
-          `claude -p ${JSON.stringify(summaryPrompt)} --verbose`,
-          { encoding: 'utf8', timeout: 30000, stdio: ['pipe', 'pipe', 'pipe'] }
-        ).trim();
-        if (summaryResult && summaryResult.length > 10) summaryText = summaryResult;
-      } catch {
-        // Fallback: extract from progress.md manually
-        if (progressContent) {
-          const doneSteps = progressContent.match(/^## Step \d+.*/gm);
-          if (doneSteps?.length) {
-            summaryText = doneSteps.map(s => s.replace(/^## /, '')).join('. ') + '.';
-          }
+      // P2 (#22): `summaryPrompt` is assembled from plan.md / progress.md /
+      // review.md, so it is ARTIFACT text — written by a person or by an engine,
+      // and not covered by the configured-value gate. It used to be interpolated
+      // into a `claude -p …` command string; generateJiraSummary now sends it on
+      // stdin, where nothing parses it. Returns null on every failure path, so
+      // the manual extraction below is still the fallback it always was.
+      const generated = generateJiraSummary(summaryPrompt);
+      if (generated) {
+        summaryText = generated;
+      } else if (progressContent) {
+        const doneSteps = progressContent.match(/^## Step \d+.*/gm);
+        if (doneSteps?.length) {
+          summaryText = doneSteps.map(s => s.replace(/^## /, '')).join('. ') + '.';
         }
       }
 
@@ -2535,14 +2630,19 @@ async function writeSyncGraceState(syncGrace) {
 }
 
 /**
- * Shell out to git and return { status, stdout, stderr } without
- * throwing. `shell: true` keeps behavior consistent with the rest of
- * this module on Windows.
+ * Run git and return { status, stdout, stderr } without throwing.
+ *
+ * P2 (#22): this was `shell: true`, with the stated reason "keeps behavior
+ * consistent with the rest of this module on Windows". Consistency was the only
+ * reason — nothing here uses a shell feature — and it was consistency with the
+ * thing being removed. `git` is `git.exe` on Windows, so it spawns directly;
+ * `args` is now a real argument vector and `cwd` was always out-of-band, which
+ * is what makes a configured repo root with a space in it work here.
  */
 function runGit(args, cwd) {
   const proc = spawnSync('git', args, {
     cwd,
-    shell: true,
+    shell: false,
     encoding: 'utf8',
     stdio: ['pipe', 'pipe', 'pipe'],
   });
@@ -3344,6 +3444,34 @@ export function buildLaunchCommand(engine, options = {}) {
   // assertions depend on it) — it now resolves the adapter and delegates to its
   // buildLaunchString. `orchestrationDir` still defaults to the install's O.
   const orchestrationDir = options.orchestrationDir ?? O;
+
+  // P2 (#22): the printed-command route, guarded at the ONE builder all eight
+  // printing call-sites share. This tool does not execute these strings — it
+  // composes them from configuration and tells a person to paste them into their
+  // own shell, which is not a smaller exposure than the spawn and is not covered
+  // by a check on the spawn path. Refusing here means no command is printed at
+  // all, rather than a command printed with a hostile fragment in it.
+  //
+  // It is a SECOND layer: both values are already cleared at config resolution.
+  // It is here anyway because this helper is exported and reachable with an
+  // options bag that never passed through normalizeRuntimeConfig, and because
+  // `launchCmd` reads process.env.REPO_PATH directly.
+  //
+  // `cwd`, `orchestrationDir` and `prompt` are deliberately NOT checked.
+  // orchestrationDir is the install root and cwd is usually the task directory
+  // under it — install-derived, not configured, and the launch-value alphabet is
+  // narrower than what a real install path may contain. `C:\Program Files
+  // (x86)\…` has parentheses in it; refusing that would be the space regression
+  // again in a different costume, and the install root is not a value an
+  // attacker supplies. (Round 2 admitted the SPACE for path keys, so the space
+  // is no longer the reason — the reason is now everything else a legitimate
+  // install path can hold.) `prompt` is free text that the adapter quotes
+  // itself. Their exposure is real and outside this deliverable's population —
+  // see docs/plans/design/p2-launch-safety.md.
+  const printedLaunchSite = 'the engine launch command printed for you to paste into your own shell';
+  assertLaunchValue(options.repoPath, { key: 'repoPath', site: printedLaunchSite });
+  assertLaunchValue(options.reasoningEffort, { key: 'engines.reasoningEffort', site: printedLaunchSite });
+
   return getEngine(engine).buildLaunchString({ ...options, orchestrationDir });
 }
 

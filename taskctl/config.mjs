@@ -18,6 +18,13 @@ import path from 'node:path';
 // a clean one-way edge — config can validate the resolved engines at load time
 // (C2) without a cycle.
 import { assertEngineRegistered } from './engines.mjs';
+// launch-safety.mjs imports nothing at all, so this is another clean one-way
+// edge. It has to be reachable from HERE specifically: this file is the only
+// place in the repository that reads taskctl.config.json and REPO_PATH into a
+// value, which makes it the boundary where a configured value's PROVENANCE is
+// still known. Downstream, at a spawn, a configured repo path and the install's
+// own directory are both just strings (P2, issue #22).
+import { assertLaunchValue, assertLaunchConfig } from './launch-safety.mjs';
 
 const __dir = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/, '$1'));
 const ORCH_ROOT = path.resolve(__dir, '..');
@@ -298,7 +305,7 @@ export function normalizeRuntimeConfig(tcfg) {
   assertEngineRegistered(engines.planner);
   assertEngineRegistered(engines.reviewer);
 
-  return {
+  const runtime = {
     repoPath: tcfg.repoPath ?? null,
     tracker: {
       type: tcfg.tracker.type,
@@ -317,6 +324,18 @@ export function normalizeRuntimeConfig(tcfg) {
     configPath: tcfg.configPath,
     raw,
   };
+
+  // P2 (#22): the launch-value gate, on the RESOLVED object and not on `raw`.
+  // Placement matters twice over. It is AFTER composition, so `grace.repoRoot`
+  // arrives carrying the config directory a relative value was resolved against
+  // (`resolveMaybeRelative` above) — a check on `raw.grace.repoRoot` would pass
+  // that same config and still let the resolved prefix reach `grace lint --path`
+  // unquoted. And it is the LAST thing this function does, so every key in the
+  // object it returns has been through the check, including any key added here
+  // later: assertLaunchConfig walks the object rather than a list of names.
+  assertLaunchConfig(runtime, tcfg.configPath);
+
+  return runtime;
 }
 
 /**
@@ -371,8 +390,23 @@ export async function loadTaskctlConfig(opts = {}) {
     ? (path.isAbsolute(file.repoPath) ? file.repoPath : path.resolve(configDir, file.repoPath))
     : null;
 
+  // P2 (#22): `repoPath` is cleared for argv HERE as well as in
+  // normalizeRuntimeConfig, because this object is reachable WITHOUT
+  // normalization: `init-harness` dispatches on it before the runtime config is
+  // built (cli.mjs) and hands this value to harness.readGitRemote, which puts it
+  // in a `git -C <value>` argv element. Env outranks the file (step 4 above), so
+  // the refusal names whichever layer actually supplied the value — pointing a
+  // reader at taskctl.config.json for a value that came from REPO_PATH sends
+  // them to edit a file that does not contain it.
+  const fromEnv = process.env.REPO_PATH != null;
+  const repoPath = process.env.REPO_PATH ?? fileRepo ?? null;
+  assertLaunchValue(repoPath, {
+    key: fromEnv ? 'REPO_PATH' : 'repoPath',
+    where: fromEnv ? 'the environment (REPO_PATH)' : configPath,
+  });
+
   return {
-    repoPath: process.env.REPO_PATH ?? fileRepo ?? null,
+    repoPath,
     tracker: {
       type,
       // NOTE: Jira projectKey is ENV-ONLY (read by loadConfig at JIRA_PROJECT_KEY).
