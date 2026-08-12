@@ -38,6 +38,17 @@ const OWNER_MARKER = '.taskctl-newproject-owner.json';
 // A LIVE pid is authoritative regardless of age; age is consulted ONLY when the
 // pid is dead/unverifiable. A generous threshold so a long engine step is safe.
 const STALE_LOCK_AGE_MS = 6 * 60 * 60 * 1000; // 6h
+// Bound on acquireFlowLock's re-derive recursion (see there): high enough that
+// real contention resolves, low enough that a pathological flap reports instead
+// of spinning forever.
+const MAX_LOCK_ATTEMPTS = 25;
+// DIAGNOSTIC ONLY — how long a takeover gate may exist before its holder is
+// described as "interrupted" rather than "in flight". This threshold selects the
+// wording of a refusal; it NEVER authorises removing anybody's gate. An age-based
+// expiry that removes the gate cannot distinguish an abandoned holder from a SLOW
+// one, and firing on a slow holder puts two takeovers in flight — a safety failure,
+// which no liveness argument buys back (see acquireTakeoverGate).
+const TAKEOVER_GATE_MAX_MS = 60_000;
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Identity + namespace
@@ -66,6 +77,8 @@ export function flowDirFor(workspaceRoot, tid) {
 
 function recordPath(flowDir) { return path.join(flowDir, 'record.json'); }
 function lockPath(flowDir) { return path.join(flowDir, 'flow.lock'); }
+/** The gate that serializes stale-lock takeovers (see acquireTakeoverGate). */
+function takeoverGatePath(flowDir) { return path.join(flowDir, 'flow.lock.takeover'); }
 
 /**
  * Read + JSON.parse + schema-validate the record (I-1). Distinguishes the three
@@ -157,13 +170,180 @@ function defaultPidAlive(pid) {
 }
 
 /**
+ * Classify the lock file at `p` for takeover purposes:
+ *   'absent' — it vanished while we looked at it;
+ *   'live'   — its pid is alive (authoritative at ANY age → never reclaimable);
+ *   'young'  — dead/unverifiable pid but not yet aged out → do NOT reclaim;
+ *   'stale'  — dead/unverifiable pid AND aged out → reclaimable.
+ * Used BOTH for the initial verdict on flow.lock and for the re-verdict on the
+ * file a takeover actually removed, so the two can never drift apart — a takeover
+ * is only as safe as the weaker of those two checks.
+ */
+async function classifyLockFile(p, { pidAlive, now, staleMs }) {
+  let body;
+  try { body = JSON.parse(await fs.readFile(p, 'utf8')); }
+  catch { body = null; } // unreadable/corrupt/EMPTY → NEVER immediately stale (C1).
+  if (body && pidAlive(body.pid)) return { state: 'live', body };
+  // C1 — age the lock. A readable body's startedAt is authoritative; an
+  // unreadable/corrupt/EMPTY body (e.g. a lock just published by open('wx') whose
+  // owner has not yet written the body) is aged by the lock FILE's lstat mtime,
+  // NEVER by Infinity. That way a contender in the publication window measures the
+  // file as brand-new (mtime ≈ now) → below the stale threshold → backs off, so the
+  // in-flight owner is never reclaimed and both processes cannot proceed.
+  let ageMs;
+  if (body?.startedAt) {
+    ageMs = now - Date.parse(body.startedAt);
+  } else {
+    let mtimeMs;
+    try { mtimeMs = (await fs.lstat(p)).mtimeMs; }
+    catch { return { state: 'absent', body: null }; }
+    ageMs = now - mtimeMs;
+  }
+  // Dead/unverifiable pid: eligible only if also aged-out. (NaN age — e.g. an
+  // unparseable startedAt — is treated conservatively as not-yet-stale.)
+  return Number.isFinite(ageMs) && ageMs >= staleMs ? { state: 'stale', body } : { state: 'young', body };
+}
+
+/**
+ * Read the takeover gate for the REFUSAL MESSAGE only — its age and the pid that
+ * wrote it. Nothing here authorises an action; see acquireTakeoverGate.
+ * Same C1 shape as the lock itself: a gate published by open('wx') whose body is not
+ * written yet has no startedAt, so it is aged by the FILE's mtime rather than being
+ * reported as ageless. An age we cannot compute at all (missing/unparseable
+ * startedAt AND no mtime) is reported as null so the caller says "in flight" rather
+ * than inventing a number — including a startedAt in the FUTURE, which is finite but
+ * negative and would otherwise read as "brand new" forever.
+ * Returns null when the gate is no longer there.
+ */
+async function readTakeoverGate(gp, now) {
+  let body = null;
+  try { body = JSON.parse(await fs.readFile(gp, 'utf8')); } catch { /* absent, partial or corrupt */ }
+  const startedAt = body?.startedAt ? Date.parse(body.startedAt) : NaN;
+  if (Number.isFinite(startedAt)) return { ageMs: now - startedAt, pid: body.pid };
+  let mtimeMs;
+  try { mtimeMs = (await fs.lstat(gp)).mtimeMs; }
+  catch { return null; }
+  return { ageMs: now - mtimeMs, pid: body?.pid };
+}
+
+/**
+ * Become the ONE caller allowed to reclaim this flow's stale lock — or discover that
+ * someone else already is. Exclusion comes from `open('wx')` on a single fixed name.
+ * Returns:
+ *   'acquired'  — the gate is ours; `.token` identifies it, and the caller MUST pass
+ *                 that token to releaseTakeoverGate when done;
+ *   'in-flight' — another invocation holds the gate (.pid/.ageMs for the message);
+ *   'retry'     — the gate was released between our EEXIST and our read; re-derive.
+ *
+ * A gate is created ONLY into a free name and removed ONLY by its own holder
+ * (token-compared — see releaseTakeoverGate). Nothing here ever takes a gate away
+ * from another caller, and that is the whole of the exclusion argument: from the
+ * instant this `open('wx')` succeeds until this holder releases, no other `open('wx')`
+ * can succeed (the name is occupied) and no other release can remove the file (the
+ * token will not match). So at most one caller ever believes it holds the gate.
+ *
+ * Deliberately NOT age-expiring. A gate old enough to look abandoned is
+ * indistinguishable on disk from one whose holder is merely SLOW, so removing it can
+ * put a second takeover in flight alongside a live one — the exact double-acquire the
+ * gate exists to prevent, re-entered through the gate rather than around it. There is
+ * also no way to remove it safely even when the holder IS gone: removal frees the
+ * name, and an entrant that wins the freed name races the remover's own successor.
+ * A pid check does not rescue the expiry either — it swaps a slow-holder race for a
+ * pid-REUSE wedge, and neither failure is one this can detect.
+ *
+ * The cost is stated rather than hidden: a holder killed between the `open('wx')` here
+ * and its release leaks the gate, and every later takeover of THIS flow refuses until
+ * the file is removed. That refusal names the file, an ordinary acquire against a free
+ * or live lock never consults the gate at all, and the archive/recovery sweep clears
+ * it. A refusal that says what to delete is recoverable; two takeovers in flight are
+ * not.
+ */
+async function acquireTakeoverGate(flowDir, now) {
+  const gp = takeoverGatePath(flowDir);
+  const token = crypto.randomUUID();
+  try {
+    const fh = await fs.open(gp, 'wx');
+    try {
+      const gateBody = JSON.stringify({ token, pid: process.pid, startedAt: new Date(now).toISOString() }) + '\n';
+      await fh.writeFile(gateBody, 'utf8');
+    } finally { await fh.close(); }
+    return { state: 'acquired', token };
+  } catch (e) {
+    if (e.code !== 'EEXIST') throw e;
+  }
+  const gate = await readTakeoverGate(gp, now);
+  if (gate == null) return { state: 'retry' }; // it vanished while we looked — race again
+  return { state: 'in-flight', pid: gate.pid, ageMs: gate.ageMs };
+}
+
+/**
+ * Release the takeover gate — ONLY when the gate on disk is still the one we
+ * published. Same compare-before-unlink rule as the lock's own release(): a blind
+ * unlink here deletes whoever's gate happens to occupy the name, which would hand a
+ * successor's critical section to a third caller.
+ */
+async function releaseTakeoverGate(flowDir, token) {
+  try {
+    const cur = JSON.parse(await fs.readFile(takeoverGatePath(flowDir), 'utf8'));
+    if (cur && cur.token === token) await fs.unlink(takeoverGatePath(flowDir));
+  } catch { /* gone, unreadable, or not ours — nothing safe to do */ }
+}
+
+/**
+ * Put a lock file back on the public name, after lifting it off `flow.lock` and then
+ * finding we must not keep it. Publishes ONLY into a FREE name — never over an
+ * occupant:
+ *   - `fs.link` re-publishes the very same inode and fails EEXIST when `flow.lock` is
+ *     occupied again;
+ *   - on a filesystem without hard links, re-publish the BYTES through `open('wx')`,
+ *     which is exactly as conditional. A byte copy is the SAME lock to its owner:
+ *     release() compares the token in the body, not the inode.
+ * NEVER `fs.rename`: rename replaces unconditionally, so it would silently evict a
+ * live lock published in the meantime. Losing a file we should not be holding is
+ * cheap; evicting a live lock breaks the mutex — that is the side to fail on.
+ * Returns 'linked' | 'copied' | 'occupied' | 'lost', for diagnosis only: the caller
+ * re-derives from the filesystem either way.
+ *
+ * @param {object} [deps]
+ * @param {(a:string,b:string)=>Promise<void>} [deps._link] test seam: stand in for
+ *        fs.link to simulate a filesystem that has no hard links.
+ */
+export async function republishLiftedLock(claim, lp, deps = {}) {
+  const link = deps._link ?? ((a, b) => fs.link(a, b));
+  try {
+    await link(claim, lp);
+    return 'linked';
+  } catch (e) {
+    // EEXIST says only that SOMEBODY published — never that what we lifted was
+    // stale. Either way the occupant stays: we do not get to evict it.
+    if (e.code === 'EEXIST') return 'occupied';
+  }
+  let bytes;
+  try { bytes = await fs.readFile(claim); }
+  catch { return 'lost'; }
+  let fh;
+  try { fh = await fs.open(lp, 'wx'); }
+  catch (e) { return e.code === 'EEXIST' ? 'occupied' : 'lost'; }
+  try { await fh.writeFile(bytes); } finally { await fh.close(); }
+  return 'copied';
+}
+
+/**
  * Acquire the single stable flow.lock. Body = { token, pid, startedAt }. Token
  * is the mutex authority; pid/startedAt are liveness diagnostics. On contention:
  *   - a LIVE-pid lock → throw "already running" (NEVER reclaimed, any age);
- *   - a stale lock (dead pid AND aged-out) → race-free takeover via an atomic
- *     rename of the stale lock to `flow.lock.reclaim-<token>` (exactly one
- *     contender wins) → create the fresh lock → remove the claim file.
+ *   - a stale lock (dead pid AND aged-out) → takeover, SERIALIZED behind the
+ *     `flow.lock.takeover` gate: re-classify flow.lock under the gate, and only
+ *     then rename it to `flow.lock.reclaim-<token>` → create the fresh lock →
+ *     remove the claim file. A contender that finds the gate held stands down.
  * Returns the held lock handle { token, release() }.
+ *
+ * The invariant that makes this a mutex: `flow.lock` is never free while a LIVE lock
+ * sits detached off to the side. The only step that detaches anything runs under the
+ * gate and only after re-reading flow.lock there, so what it detaches is provably
+ * stale — an entrant that wins the briefly-free name is then the sole legitimate
+ * holder, and the reclaimer defers to it. (Given the takeover policy's own premise:
+ * that a lock with a dead pid, aged past staleMs, has no live owner.)
  *
  * @param {string} flowDir
  * @param {object} [deps]
@@ -175,11 +355,37 @@ function defaultPidAlive(pid) {
  *        zero-byte lock in the publication window (C1 race repro).
  * @param {()=>any} [deps._afterRenameClaim]        test hook: throw AFTER the
  *        reclaim rename + BEFORE the fresh-lock create, to leak a reclaim claim.
+ * @param {()=>any} [deps._beforeReclaimRename]     test hook: run AFTER this
+ *        caller has classified flow.lock as stale + BEFORE it renames it away, so
+ *        a test can let a rival complete a whole takeover inside that gap (C2
+ *        race repro — the classification is about a PATH another contender may
+ *        have re-pointed at a fresh, live lock in the meantime).
+ * @param {()=>any} [deps._insideAbsenceWindow]     test hook: run IMMEDIATELY after
+ *        this caller's reclaim rename, i.e. while flow.lock is ABSENT because this
+ *        caller lifted it — so a test can schedule a third contender inside that
+ *        hole (C3 race repro).
+ * @param {()=>any} [deps._insideTakeoverGate]      test hook: run INSIDE the takeover
+ *        gate's critical section — after flow.lock has been re-classified there and
+ *        BEFORE it is detached. Lets a test prove no rival can reclaim in that window,
+ *        and drive the one interleaving that still reaches the restore path.
+ * @param {(a:string,b:string)=>Promise<void>} [deps._link] test seam, forwarded to
+ *        republishLiftedLock: stand in for fs.link to simulate a filesystem that has
+ *        no hard links.
  */
-export async function acquireFlowLock(flowDir, deps = {}) {
-  const pidAlive = deps.pidAlive ?? defaultPidAlive;
-  const now = deps.now ?? Date.now();
-  const staleMs = deps.staleMs ?? STALE_LOCK_AGE_MS;
+export async function acquireFlowLock(flowDir, deps = {}, _attempt = 0) {
+  // Every "the world moved under us" branch below re-derives by recursing. Each
+  // recursion is a response to someone else making progress, so it terminates in
+  // practice — but nothing structurally BOUNDS it, and an unbounded retry would
+  // hang the CLI rather than report a problem. Cap it and surface a lock conflict.
+  if (_attempt >= MAX_LOCK_ATTEMPTS) {
+    throw new Error(`TASKCTL_LOCKED:could not settle the flow lock after ${MAX_LOCK_ATTEMPTS} attempts (sustained contention on ${lockPath(flowDir)})`);
+  }
+  const probe = {
+    pidAlive: deps.pidAlive ?? defaultPidAlive,
+    now: deps.now ?? Date.now(),
+    staleMs: deps.staleMs ?? STALE_LOCK_AGE_MS,
+  };
+  const { now } = probe;
   const lp = lockPath(flowDir);
   const token = crypto.randomUUID();
   const body = JSON.stringify({ token, pid: process.pid, startedAt: new Date(now).toISOString() }, null, 2) + '\n';
@@ -199,57 +405,120 @@ export async function acquireFlowLock(flowDir, deps = {}) {
   }
 
   // The lock exists. Read it and decide live vs stale.
-  let existing;
-  try {
-    existing = JSON.parse(await fs.readFile(lp, 'utf8'));
-  } catch {
-    existing = null; // unreadable/corrupt/EMPTY → NEVER immediately stale (C1).
+  const found = await classifyLockFile(lp, probe);
+  if (found.state === 'absent') return acquireFlowLock(flowDir, deps, _attempt + 1); // lock vanished — retry from scratch
+  if (found.state === 'live') {
+    const since = found.body.startedAt ?? 'unknown';
+    throw new Error(`TASKCTL_LOCKED:a flow for this target is already running (pid ${found.body.pid}, since ${since})`);
   }
-  const livePid = existing && pidAlive(existing.pid);
-  if (livePid) {
-    const since = existing.startedAt ?? 'unknown';
-    throw new Error(`TASKCTL_LOCKED:a flow for this target is already running (pid ${existing.pid}, since ${since})`);
-  }
-  // C1 — age the lock. A readable body's startedAt is authoritative; an
-  // unreadable/corrupt/EMPTY body (e.g. a lock just published by open('wx') whose
-  // owner has not yet written the body) is aged by the lock FILE's lstat mtime,
-  // NEVER by Infinity. That way a contender in the publication window measures the
-  // file as brand-new (mtime ≈ now) → below the stale threshold → backs off, so
-  // the in-flight owner is never reclaimed and both processes cannot proceed.
-  let ageMs;
-  if (existing?.startedAt) {
-    ageMs = now - Date.parse(existing.startedAt);
-  } else {
-    let lockMtimeMs;
-    try { lockMtimeMs = (await fs.lstat(lp)).mtimeMs; }
-    catch { return acquireFlowLock(flowDir, deps); } // lock vanished — retry from scratch
-    ageMs = now - lockMtimeMs;
-  }
-  // Dead/unverifiable pid: eligible only if also aged-out. (NaN age — e.g. an
-  // unparseable startedAt — is treated conservatively as not-yet-stale.)
-  if (!(Number.isFinite(ageMs) && ageMs >= staleMs)) {
+  if (found.state !== 'stale') {
     // Not yet old enough to reclaim — conservative: surface "already running".
-    throw new Error(`TASKCTL_LOCKED:a flow for this target appears to be running (pid ${existing?.pid ?? '?'}, since ${existing?.startedAt ?? '?'})`);
+    throw new Error(`TASKCTL_LOCKED:a flow for this target appears to be running (pid ${found.body?.pid ?? '?'}, since ${found.body?.startedAt ?? '?'})`);
   }
 
-  // Stale takeover: atomic rename of the stale lock to a uniquely-named claim.
+  // ── Stale takeover: decide FIRST, detach after, under exclusion ─────────────
+  // A filesystem gives exactly two ways to publish a name: `rename`, which replaces
+  // whatever is there UNCONDITIONALLY, and `open('wx')`/`link`, which publish only
+  // into a FREE name. Neither is conditional on WHICH file currently occupies the
+  // name, so the identity question a takeover turns on — "is flow.lock still the
+  // stale file I judged?" — cannot be fused into the act that acts on it. It has to
+  // be protected by mutual exclusion instead. Hence a gate: one takeover in flight
+  // per flow dir, so the verdict cannot go out of date before it is used.
+  if (deps._beforeReclaimRename) await deps._beforeReclaimRename(); // C2 repro seam
+  const gate = await acquireTakeoverGate(flowDir, now);
+  if (gate.state === 'retry') return acquireFlowLock(flowDir, deps, _attempt + 1);
+  if (gate.state === 'in-flight') {
+    // Someone else is already reclaiming this exact lock, and TASKCTL_LOCKED is the
+    // right answer whichever way their reclaim ends: they either publish a live lock,
+    // or stand down precisely BECAUSE flow.lock turned out live/young. Report rather
+    // than retry into them. Age only picks the WORDING (see TAKEOVER_GATE_MAX_MS): a
+    // gate older than the gated section could ever run was probably left by a killed
+    // reclaimer, and since nothing removes a gate but its own holder, say which file
+    // to delete instead of stalling on a timer that could fire on a live holder.
+    throw new Error(gate.ageMs >= TAKEOVER_GATE_MAX_MS
+      ? `TASKCTL_LOCKED:a takeover of the stale flow lock ${lp} has been in flight since ${new Date(now - gate.ageMs).toISOString()} (pid ${gate.pid ?? '?'}); if no taskctl is running for this flow it was interrupted — remove ${takeoverGatePath(flowDir)} to continue`
+      : `TASKCTL_LOCKED:another invocation (pid ${gate.pid ?? '?'}) is reclaiming the stale flow lock ${lp}; re-run in a moment`);
+  }
+  let outcome;
+  try {
+    outcome = await reclaimUnderGate(flowDir, deps, probe, token, body);
+  } finally {
+    // Always before re-deriving: the recursion contends for this very gate. Identity-
+    // compared, never blind: if ours was swept and a successor published theirs, the
+    // gate on the name is the successor's critical section, not ours to end.
+    await releaseTakeoverGate(flowDir, gate.token);
+  }
+  if (outcome === 'held') return makeHeldLock(flowDir, token);
+  return acquireFlowLock(flowDir, deps, _attempt + 1); // re-derive against what is ACTUALLY there
+}
+
+/**
+ * The reclaim itself, running under the takeover gate. Returns 'held' when this
+ * caller published the fresh lock, or 'redo' when it must re-derive from scratch.
+ *
+ * The ORDERING is the whole point. flow.lock is re-classified here, under exclusion,
+ * BEFORE anything is detached from it. The previous protocol renamed first and
+ * re-classified afterwards, which cannot be repaired by any later decision: once the
+ * victim is off the public name that name is free, and new entrants consult only that
+ * name, so a lock removed and then found live is already racing entrants no matter
+ * what its remover concludes privately.
+ */
+async function reclaimUnderGate(flowDir, deps, probe, token, body) {
+  const lp = lockPath(flowDir);
+  const still = await classifyLockFile(lp, probe);
+  // live / young / absent: nothing was detached, so there is nothing to put back and
+  // nothing for an entrant to walk into. Re-derive.
+  if (still.state !== 'stale') return 'redo';
+  if (deps._insideTakeoverGate) await deps._insideTakeoverGate(); // test hook: inside the critical section
+  // This verdict cannot go stale before the rename below uses it. The only writers of
+  // flow.lock are (a) entrants, whose open('wx') fails while the file exists, (b)
+  // other takeovers, excluded by the gate, and (c) the holder's own token-guarded
+  // release() — and the file just classified has, by that verdict, no live owner left
+  // to call it. So the file the rename detaches IS the file classified above.
   const claim = path.join(flowDir, `flow.lock.reclaim-${token}`);
   try {
     await fs.rename(lp, claim);
   } catch (e) {
-    // Lost the rename race (another reclaimer already renamed it away) → retry
-    // the whole acquisition (the winner may now hold a fresh live lock).
-    if (e.code === 'ENOENT') {
-      return acquireFlowLock(flowDir, deps);
-    }
+    if (e.code === 'ENOENT') return 'redo'; // vanished under us after all
     throw e;
   }
-  // Won the rename. Create the fresh lock, then remove the claim file.
+  if (deps._insideAbsenceWindow) await deps._insideAbsenceWindow(); // C3 repro seam
+  // Belt and braces on the file we now exclusively possess. Under the gate this can
+  // only disagree with the verdict above if the liveness probe LIED about the previous
+  // holder — it was alive, released, and an entrant published into the freed name
+  // before our rename ran. That is the takeover POLICY's premise failing, not a race
+  // in the protocol; one extra read is cheap insurance against it.
+  const taken = await classifyLockFile(claim, probe);
+  if (taken.state !== 'stale') {
+    // We detached a lock we had no right to detach. Put it back where it can be put
+    // back safely — never over an occupant (see republishLiftedLock).
+    await republishLiftedLock(claim, lp, deps);
+    // Drops OUR name for it: after 'linked' the inode lives on at flow.lock, after
+    // 'copied' an identical body does. After 'occupied'/'lost' this destroys a file
+    // whose owner may still believe it holds — nothing safe can be done about that
+    // here, and its release() is token-guarded so it cannot damage the occupant.
+    try { await fs.unlink(claim); } catch { /* already gone */ }
+    return 'redo';
+  }
+
+  // Won the gate AND verified what we are replacing. Publish the fresh lock, then
+  // remove the claim file.
   if (deps._afterRenameClaim) await deps._afterRenameClaim(); // test: leak the claim
-  const fh = await fs.open(lp, 'wx');
+  let fh;
+  try {
+    fh = await fs.open(lp, 'wx');
+  } catch (e) {
+    if (e.code !== 'EEXIST') throw e;
+    // Our own rename left flow.lock free for an instant and an ordinary acquirer
+    // walked in on the first-attempt wx path. IT holds the mutex; we do not. Drop the
+    // (verified stale) claim and re-derive, rather than throwing a raw EEXIST at a
+    // caller who is entitled to an "already running" answer.
+    try { await fs.unlink(claim); } catch { /* claim already gone */ }
+    return 'redo';
+  }
   try { await fh.writeFile(body, 'utf8'); } finally { await fh.close(); }
   try { await fs.unlink(claim); } catch { /* claim already gone */ }
-  return makeHeldLock(flowDir, token);
+  return 'held';
 }
 
 function makeHeldLock(flowDir, token) {
@@ -276,7 +545,10 @@ const isLockFile = (name) => name === 'flow.lock';
 
 /** List direct children of the flow dir eligible to be archived/swept: every
  *  entry EXCEPT existing `archive-` dirs and the live flow.lock. (A stray
- *  flow.lock.reclaim-* IS swept.) */
+ *  flow.lock.reclaim-* IS swept, and so is a stray flow.lock.takeover gate: a sweep
+ *  runs under a LIVE held lock, under which no takeover can be in flight — any
+ *  contender re-classifying flow.lock finds it live and stands down before detaching
+ *  anything — so yanking a gate here cannot break exclusion.) */
 async function sweepableChildren(flowDir) {
   let entries;
   try { entries = await fs.readdir(flowDir); } catch { return []; }
