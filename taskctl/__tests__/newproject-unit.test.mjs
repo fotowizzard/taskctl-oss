@@ -157,6 +157,408 @@ test('lock: two simultaneous stale-reclaimers → exactly one wins', async () =>
   await fulfilled[0].value.release();
 });
 
+test('lock: C2 — a reclaimer whose stale verdict went out of date must NOT take over', async () => {
+  const { flowDir } = await tmpFlow();
+  const lp = path.join(flowDir, 'flow.lock');
+  await fs.writeFile(
+    lp,
+    JSON.stringify({ token: 'old', pid: 999999, startedAt: new Date(Date.now() - 1e10).toISOString() }),
+    'utf8',
+  );
+  // B classifies the planted lock as stale and then PAUSES in the gap before its
+  // rename. Rival A performs an ENTIRE legitimate takeover inside that gap, so
+  // flow.lock now names a FRESH, LIVE lock — a different file from the one B
+  // judged. B's rename is atomic on the PATH, not on the FILE, so it would happily
+  // remove A's live lock and publish B's own: two holders. B must refuse instead.
+  const probe = { pidAlive: (pid) => pid !== 999999 };
+  let aLock = null;
+  await assert.rejects(
+    () => np.acquireFlowLock(flowDir, {
+      ...probe,
+      _beforeReclaimRename: async () => { aLock = await np.acquireFlowLock(flowDir, probe); },
+    }),
+    (e) => /TASKCTL_LOCKED:/.test(e.message),
+    'B must back off — the file it classified is no longer the file at that path',
+  );
+  assert.ok(aLock, 'rival A completed its takeover inside the gap');
+  // A's live lock survived intact: not renamed away, not replaced by B's.
+  assert.equal(JSON.parse(await fs.readFile(lp, 'utf8')).token, aLock.token);
+  const leftover = (await fs.readdir(flowDir)).filter((n) => n.startsWith('flow.lock.reclaim-'));
+  assert.deepEqual(leftover, [], 'B left no claim behind');
+  // A is still the genuine owner — its compare-before-unlink release works.
+  await aLock.release();
+  assert.equal(fsSync.existsSync(lp), false, 'the owner could release its own lock');
+});
+
+test('lock: C2 control — a paused reclaimer STILL takes over when flow.lock is unchanged', async () => {
+  const { flowDir } = await tmpFlow();
+  const lp = path.join(flowDir, 'flow.lock');
+  await fs.writeFile(
+    lp,
+    JSON.stringify({ token: 'old', pid: 999999, startedAt: new Date(Date.now() - 1e10).toISOString() }),
+    'utf8',
+  );
+  // Negative control for the test above: same pause, but nothing touches the lock
+  // in the gap. The post-rename re-validation must accept the file — otherwise the
+  // C2 assertion would pass vacuously via a takeover path that refuses everything.
+  let gapRan = false;
+  const lock = await np.acquireFlowLock(flowDir, {
+    pidAlive: (pid) => pid !== 999999,
+    _beforeReclaimRename: () => { gapRan = true; },
+  });
+  assert.ok(gapRan, 'the pause really happened');
+  assert.equal(JSON.parse(await fs.readFile(lp, 'utf8')).token, lock.token, 'the takeover completed');
+  const leftover = (await fs.readdir(flowDir)).filter((n) => n.startsWith('flow.lock.reclaim-'));
+  assert.deepEqual(leftover, []);
+  await lock.release();
+});
+
+test('lock: C2 — a takeover whose gap was filled by another acquirer yields TASKCTL_LOCKED, not a raw EEXIST', async () => {
+  const { flowDir } = await tmpFlow();
+  const lp = path.join(flowDir, 'flow.lock');
+  await fs.writeFile(
+    lp,
+    JSON.stringify({ token: 'old', pid: 999999, startedAt: new Date(Date.now() - 1e10).toISOString() }),
+    'utf8',
+  );
+  // A wins the reclaim rename, so flow.lock is momentarily ABSENT. In that window
+  // B acquires via the ordinary exclusive-create path and legitimately holds the
+  // mutex. A must recognise it did NOT get the lock and report that as a lock
+  // conflict — not surface the bare EEXIST from its own fresh-lock create.
+  const probe = { pidAlive: (pid) => pid !== 999999 };
+  let bLock = null;
+  await assert.rejects(
+    () => np.acquireFlowLock(flowDir, {
+      ...probe,
+      _afterRenameClaim: async () => { bLock = await np.acquireFlowLock(flowDir, probe); },
+    }),
+    (e) => /TASKCTL_LOCKED:/.test(e.message),
+    'the rename winner must back off in favour of the acquirer that published first',
+  );
+  assert.ok(bLock, 'B acquired inside the window where flow.lock was absent');
+  assert.equal(JSON.parse(await fs.readFile(lp, 'utf8')).token, bLock.token, "B's lock is untouched");
+  const leftover = (await fs.readdir(flowDir)).filter((n) => n.startsWith('flow.lock.reclaim-'));
+  assert.deepEqual(leftover, [], 'the abandoning reclaimer cleaned up its claim');
+  await bLock.release();
+});
+
+test('lock: C3 — a reclaimer must never DETACH a lock it has not re-verified under exclusion', async () => {
+  const { flowDir } = await tmpFlow();
+  const lp = path.join(flowDir, 'flow.lock');
+  await fs.writeFile(
+    lp,
+    JSON.stringify({ token: 'old', pid: 999999, startedAt: new Date(Date.now() - 1e10).toISOString() }),
+    'utf8',
+  );
+  // The three-contender interleaving, driven deterministically through both seams:
+  //   1. B classifies the planted lock as stale;
+  //   2. rival A completes an ENTIRE takeover → flow.lock is A's FRESH, LIVE lock;
+  //   3. B's rename fires and carries A's LIVE lock away → flow.lock is ABSENT;
+  //   4. C walks into that hole and wins the first-attempt exclusive create;
+  //   5. B now finds its claim LIVE, cannot put it back (C published first), so it
+  //      destroys the file it lifted and backs off.
+  // B backing off is NOT sufficient: A and C have both returned a held handle. A
+  // reclaimer must never detach a file from the public name on the strength of a
+  // verdict that another takeover could already have invalidated.
+  const probe = { pidAlive: (pid) => pid !== 999999 };
+  const holders = [];
+  const acquireInto = async (who) => {
+    try { holders.push({ who, lock: await np.acquireFlowLock(flowDir, probe) }); }
+    catch { /* refused — a legitimate outcome for any single contender */ }
+  };
+  const bResult = await np.acquireFlowLock(flowDir, {
+    ...probe,
+    _beforeReclaimRename: () => acquireInto('A'),
+    _insideAbsenceWindow: () => acquireInto('C'),
+  }).then(
+    (lock) => { holders.push({ who: 'B', lock }); return 'ACQUIRED'; },
+    (e) => (/TASKCTL_LOCKED:/.test(e.message) ? 'REFUSED' : `ERR:${e.message}`),
+  );
+  assert.equal(
+    holders.length, 1,
+    `mutual exclusion: at most one caller may hold — held by [${holders.map((h) => h.who).join(', ')}], B: ${bResult}`,
+  );
+  assert.equal(holders[0].who, 'A', 'the contender that completed a whole takeover first is the holder');
+  assert.equal(bResult, 'REFUSED', 'B must report a lock conflict, not a raw error');
+  // The sole holder's lock is the file actually at flow.lock: nobody's live lock was
+  // carried off the public name, replaced, or deleted underneath them.
+  assert.equal(JSON.parse(await fs.readFile(lp, 'utf8')).token, holders[0].lock.token);
+  const leftover = (await fs.readdir(flowDir)).filter((n) => n.startsWith('flow.lock.reclaim-'));
+  assert.deepEqual(leftover, [], 'no claim left behind');
+  await holders[0].lock.release();
+  assert.equal(fsSync.existsSync(lp), false, 'the sole holder could release its own lock');
+});
+
+test('lock: a takeover already in flight (gate held) makes a second reclaimer stand down', async () => {
+  const { flowDir } = await tmpFlow();
+  const lp = path.join(flowDir, 'flow.lock');
+  const stale = JSON.stringify({ token: 'old', pid: 999999, startedAt: new Date(Date.now() - 1e10).toISOString() });
+  await fs.writeFile(lp, stale, 'utf8');
+  // A takeover is in flight: the gate exists and is brand-new. The stale lock is
+  // still on the public name, so the only correct answer is a lock conflict — and
+  // this reclaimer must not touch flow.lock on its way out.
+  await fs.writeFile(
+    path.join(flowDir, 'flow.lock.takeover'),
+    JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }),
+    'utf8',
+  );
+  await assert.rejects(
+    () => np.acquireFlowLock(flowDir, { pidAlive: (pid) => pid !== 999999 }),
+    (e) => /TASKCTL_LOCKED:.*reclaiming/.test(e.message),
+  );
+  assert.equal(await fs.readFile(lp, 'utf8'), stale, 'the stale lock was left where it was');
+  assert.ok(fsSync.existsSync(path.join(flowDir, 'flow.lock.takeover')), "someone else's gate is left alone");
+});
+
+test('lock: a BODYLESS but brand-new gate (its own publication window) also makes a reclaimer stand down', async () => {
+  const { flowDir } = await tmpFlow();
+  const lp = path.join(flowDir, 'flow.lock');
+  await fs.writeFile(
+    lp,
+    JSON.stringify({ token: 'old', pid: 999999, startedAt: new Date(Date.now() - 1e10).toISOString() }),
+    'utf8',
+  );
+  // Same C1 shape as the lock itself: a gate whose owner has published the file but
+  // not yet written the body must be aged by the FILE's mtime (≈ now → in flight),
+  // never treated as ageless and cleared.
+  await fs.writeFile(path.join(flowDir, 'flow.lock.takeover'), '', 'utf8');
+  await assert.rejects(
+    () => np.acquireFlowLock(flowDir, { pidAlive: (pid) => pid !== 999999 }),
+    (e) => /TASKCTL_LOCKED:.*reclaiming/.test(e.message),
+  );
+});
+
+test('lock: a LONG-STANDING gate is refused with the file to remove — never cleared', async () => {
+  const { flowDir } = await tmpFlow();
+  const lp = path.join(flowDir, 'flow.lock');
+  const stale = JSON.stringify({ token: 'old', pid: 999999, startedAt: new Date(Date.now() - 1e10).toISOString() });
+  await fs.writeFile(lp, stale, 'utf8');
+  // An old gate is indistinguishable on disk from a gate whose holder is merely SLOW
+  // (see the stalled-holder test below), so age must not authorise removing it. What
+  // an aged-out gate buys is a better MESSAGE: name the file, so an operator can undo
+  // a genuine interruption in one command. This test previously asserted the opposite
+  // — that the gate was cleared and the takeover proceeded — and the behaviour change
+  // is deliberate: that clearing is what the stalled-holder test exploits.
+  const gp = path.join(flowDir, 'flow.lock.takeover');
+  await fs.writeFile(gp, JSON.stringify({ token: 'g', pid: process.pid, startedAt: new Date(Date.now() - 1e10).toISOString() }), 'utf8');
+  await assert.rejects(
+    () => np.acquireFlowLock(flowDir, { pidAlive: (pid) => pid !== 999999 }),
+    (e) => /TASKCTL_LOCKED:.*interrupted — remove .*flow\.lock\.takeover/.test(e.message),
+  );
+  assert.ok(fsSync.existsSync(gp), 'the gate was left for its holder (or an operator) to remove');
+  assert.equal(await fs.readFile(lp, 'utf8'), stale, 'the stale lock was left where it was');
+  // Removing the named file is all it takes — the refusal is recoverable, not a wedge.
+  await fs.unlink(gp);
+  const lock = await np.acquireFlowLock(flowDir, { pidAlive: (pid) => pid !== 999999 });
+  assert.equal(JSON.parse(await fs.readFile(lp, 'utf8')).token, lock.token, 'the takeover then proceeds');
+  await lock.release();
+});
+
+test('lock: a gate dated in the FUTURE is still refused, and says so as a conflict', async () => {
+  const { flowDir } = await tmpFlow();
+  const lp = path.join(flowDir, 'flow.lock');
+  await fs.writeFile(
+    lp,
+    JSON.stringify({ token: 'old', pid: 999999, startedAt: new Date(Date.now() - 1e10).toISOString() }),
+    'utf8',
+  );
+  // A future startedAt makes the gate's age NEGATIVE. While age gated the removal that
+  // was an unbounded wait dressed up as a 60 s timeout; now it only picks wording, so
+  // the outcome is the safe one either way — refuse, never clear.
+  await fs.writeFile(
+    path.join(flowDir, 'flow.lock.takeover'),
+    JSON.stringify({ token: 'g', pid: process.pid, startedAt: new Date(Date.now() + 1e10).toISOString() }),
+    'utf8',
+  );
+  await assert.rejects(
+    () => np.acquireFlowLock(flowDir, { pidAlive: (pid) => pid !== 999999 }),
+    (e) => /TASKCTL_LOCKED:.*reclaiming/.test(e.message),
+  );
+  assert.ok(fsSync.existsSync(path.join(flowDir, 'flow.lock.takeover')), 'the gate is left alone');
+});
+
+test('lock: a STALLED gate holder is never overtaken — no two takeovers in flight', async () => {
+  const { flowDir } = await tmpFlow();
+  const lp = path.join(flowDir, 'flow.lock');
+  await fs.writeFile(
+    lp,
+    JSON.stringify({ token: 'old', pid: 999999, startedAt: new Date(Date.now() - 1e10).toISOString() }),
+    'utf8',
+  );
+  // The defect this pins, in the shape that makes it a SAFETY failure rather than a
+  // liveness tradeoff. B holds the gate and is stalled INSIDE its critical section —
+  // flow.lock re-classified, not yet detached. Contender A's clock has moved past the
+  // gate's expiry, so under an age-expiring gate A tears B's gate down and starts a
+  // SECOND takeover against the same lock. A completes it and publishes a fresh LIVE
+  // lock; B then resumes on a verdict A has already voided, detaches A's live lock,
+  // and C walks into the hole B opened. Two takeovers in flight is the cause; two
+  // holders is the symptom — assert both, because only the first is the property.
+  const probe = { pidAlive: (pid) => pid !== 999999 };
+  const now = Date.now();
+  const holders = [];
+  const acquireInto = async (who, deps) => {
+    try { holders.push({ who, lock: await np.acquireFlowLock(flowDir, deps) }); }
+    catch (e) { return /TASKCTL_LOCKED:/.test(e.message) ? 'REFUSED' : `ERR:${e.message}`; }
+    return 'ACQUIRED';
+  };
+  let aResult = 'never ran';
+  const bResult = await acquireInto('B', {
+    ...probe,
+    now,
+    // A, 61 s later by its own clock: B's gate has "expired" while B is alive in it.
+    _insideTakeoverGate: async () => { aResult = await acquireInto('A', { ...probe, now: now + 61_000 }); },
+    _insideAbsenceWindow: () => acquireInto('C', probe),
+  });
+  assert.equal(aResult, 'REFUSED', 'a second takeover must not START while the first is in flight');
+  assert.equal(
+    holders.length, 1,
+    `mutual exclusion: at most one caller may hold — held by [${holders.map((h) => h.who).join(', ')}], B: ${bResult}`,
+  );
+  // Who holds is not the property. C legitimately wins the briefly-free name while B
+  // has a PROVABLY STALE file off to the side, and B defers to it — the structural
+  // absence window, safe by construction. What must never happen is A holding too,
+  // because A's whole takeover ran alongside B's.
+  assert.equal(JSON.parse(await fs.readFile(lp, 'utf8')).token, holders[0].lock.token, 'the sole holder owns the file on the name');
+  const strays = (await fs.readdir(flowDir)).filter((n) => n !== 'flow.lock');
+  assert.deepEqual(strays, [], 'the gate and the claim were both cleaned up');
+  await holders[0].lock.release();
+});
+
+test('lock: a gate holder releases only ITS OWN gate, never a successor\'s', async () => {
+  const { flowDir } = await tmpFlow();
+  const lp = path.join(flowDir, 'flow.lock');
+  await fs.writeFile(
+    lp,
+    JSON.stringify({ token: 'old', pid: 999999, startedAt: new Date(Date.now() - 1e10).toISOString() }),
+    'utf8',
+  );
+  // The `finally` that ends a takeover used to unlink the gate PATH unconditionally.
+  // A gate can still leave the name without its holder's consent — the archive sweep
+  // removes a stray gate — and a successor may then publish its own. A blind unlink
+  // there ends the successor's critical section from the outside, which is the same
+  // defect one level up. Simulated at exactly that point: the gate is swept and a
+  // successor publishes while this holder is inside its section.
+  const gp = path.join(flowDir, 'flow.lock.takeover');
+  const successor = JSON.stringify({ token: 'successor', pid: process.pid, startedAt: new Date().toISOString() });
+  const lock = await np.acquireFlowLock(flowDir, {
+    pidAlive: (pid) => pid !== 999999,
+    _insideTakeoverGate: async () => { await fs.unlink(gp); await fs.writeFile(gp, successor, 'utf8'); },
+  });
+  assert.equal(await fs.readFile(gp, 'utf8'), successor, "the successor's gate survived this holder's release");
+  assert.equal(JSON.parse(await fs.readFile(lp, 'utf8')).token, lock.token, 'the takeover still completed');
+  await lock.release();
+  await fs.unlink(gp);
+});
+
+test('lock: while a takeover holds the gate, a rival reclaimer CANNOT start its own', async () => {
+  const { flowDir } = await tmpFlow();
+  const lp = path.join(flowDir, 'flow.lock');
+  await fs.writeFile(
+    lp,
+    JSON.stringify({ token: 'old', pid: 999999, startedAt: new Date(Date.now() - 1e10).toISOString() }),
+    'utf8',
+  );
+  // The gate's whole purpose: inside the critical section — flow.lock re-classified,
+  // not yet detached — no other caller may reclaim. This is the window the
+  // three-contender case exploited, and it is the one a deterministic test cannot
+  // otherwise reach: without exclusion a rival completes a whole takeover here and
+  // the verdict this caller is about to act on is already void.
+  const probe = { pidAlive: (pid) => pid !== 999999 };
+  let rival = 'never ran';
+  const lock = await np.acquireFlowLock(flowDir, {
+    ...probe,
+    _insideTakeoverGate: async () => {
+      rival = await np.acquireFlowLock(flowDir, probe).then(
+        () => 'TOOK OVER',
+        (e) => (/TASKCTL_LOCKED:/.test(e.message) ? 'STOOD DOWN' : `ERR:${e.message}`),
+      );
+    },
+  });
+  assert.equal(rival, 'STOOD DOWN', 'the gate holder is the only caller allowed to reclaim');
+  assert.equal(JSON.parse(await fs.readFile(lp, 'utf8')).token, lock.token, 'the gate holder completed its takeover');
+  const strays = (await fs.readdir(flowDir)).filter((n) => n !== 'flow.lock');
+  assert.deepEqual(strays, [], 'the gate and the claim were both cleaned up');
+  await lock.release();
+});
+
+test('lock: the belt-and-braces restore never evicts the occupant, even with no hard links', async () => {
+  const { flowDir } = await tmpFlow();
+  const lp = path.join(flowDir, 'flow.lock');
+  await fs.writeFile(
+    lp,
+    JSON.stringify({ token: 'old', pid: 999999, startedAt: new Date(Date.now() - 1e10).toISOString() }),
+    'utf8',
+  );
+  // The ONE interleaving that still reaches the restore path, and it needs the
+  // liveness probe to have LIED: the "dead" holder was alive, released, and C
+  // published into the freed name before B's rename ran — so B's rename detaches C's
+  // LIVE lock. Two callers already believe they hold at that point, because a stale
+  // verdict on a live owner is the takeover POLICY's premise failing; no protocol can
+  // repair it from here. What must still hold is narrower: whatever B does with the
+  // file it lifted, it must not evict whoever occupies flow.lock now.
+  const probe = { pidAlive: (pid) => pid !== 999999 };
+  let c = null;
+  let d = null;
+  const bResult = await np.acquireFlowLock(flowDir, {
+    ...probe,
+    _insideTakeoverGate: async () => { await fs.unlink(lp); c = await np.acquireFlowLock(flowDir, probe); },
+    _insideAbsenceWindow: async () => { d = await np.acquireFlowLock(flowDir, probe); },
+    _link: async () => { const e = new Error('no hard links here'); e.code = 'EPERM'; throw e; },
+  }).then(() => 'ACQUIRED', (e) => (/TASKCTL_LOCKED:/.test(e.message) ? 'REFUSED' : `ERR:${e.message}`));
+  assert.ok(c, 'C published into the name the misclassified holder released');
+  assert.ok(d, 'D took the name while B held C\'s lock off to the side');
+  assert.equal(bResult, 'REFUSED', 'B must not keep a lock it turned out to have lifted live');
+  assert.equal(JSON.parse(await fs.readFile(lp, 'utf8')).token, d.token, 'D, the occupant, was NOT evicted');
+  // C lost its lock (the policy failure above), but its release is token-guarded, so
+  // even a phantom holder cannot damage the caller that legitimately holds now.
+  await c.release();
+  assert.equal(JSON.parse(await fs.readFile(lp, 'utf8')).token, d.token, "the phantom's release left D alone");
+  await d.release();
+  assert.equal(fsSync.existsSync(lp), false, 'the real holder could release');
+});
+
+test('restore: a lock lifted off flow.lock goes back only into a FREE name — with hard links', async () => {
+  const { flowDir } = await tmpFlow();
+  const lp = path.join(flowDir, 'flow.lock');
+  const claim = path.join(flowDir, 'flow.lock.reclaim-t');
+  const lifted = JSON.stringify({ token: 'lifted', pid: process.pid });
+  // (a) flow.lock is free → the very same inode goes back.
+  await fs.writeFile(claim, lifted, 'utf8');
+  assert.equal(await np.republishLiftedLock(claim, lp), 'linked');
+  assert.equal(await fs.readFile(lp, 'utf8'), lifted);
+  assert.equal((await fs.lstat(lp)).ino, (await fs.lstat(claim)).ino, 'restored the same file, not a copy');
+  await fs.unlink(claim);
+  // (b) flow.lock is occupied → the occupant survives untouched.
+  const occupant = JSON.stringify({ token: 'occupant', pid: process.pid });
+  await fs.writeFile(lp, occupant, 'utf8');
+  await fs.writeFile(claim, lifted, 'utf8');
+  assert.equal(await np.republishLiftedLock(claim, lp), 'occupied');
+  assert.equal(await fs.readFile(lp, 'utf8'), occupant, 'a live occupant is NEVER evicted');
+});
+
+test('restore: with NO hard links the fallback still refuses to evict — it never renames over flow.lock', async () => {
+  const { flowDir } = await tmpFlow();
+  const lp = path.join(flowDir, 'flow.lock');
+  const claim = path.join(flowDir, 'flow.lock.reclaim-t');
+  const lifted = JSON.stringify({ token: 'lifted', pid: process.pid });
+  // A filesystem without hard links: fs.link fails with something OTHER than EEXIST.
+  // The old fallback was an unconditional fs.rename, which replaces whatever is at
+  // flow.lock — silently evicting a holder that published in the meantime.
+  const noHardLinks = { _link: async () => { const e = new Error('no hard links here'); e.code = 'EPERM'; throw e; } };
+  // (a) occupied → refuse. This is the eviction the fallback must not commit.
+  const occupant = JSON.stringify({ token: 'occupant', pid: process.pid });
+  await fs.writeFile(lp, occupant, 'utf8');
+  await fs.writeFile(claim, lifted, 'utf8');
+  assert.equal(await np.republishLiftedLock(claim, lp, noHardLinks), 'occupied');
+  assert.equal(await fs.readFile(lp, 'utf8'), occupant, 'the live occupant survived the fallback');
+  // (b) free → the bytes go back, so the fallback is not simply "always refuse".
+  // A byte copy is the same lock to its owner: release() compares the token, not the
+  // inode — assert that the lifted owner can still release what came back.
+  await fs.unlink(lp);
+  assert.equal(await np.republishLiftedLock(claim, lp, noHardLinks), 'copied');
+  assert.equal(await fs.readFile(lp, 'utf8'), lifted, 'restored the lifted body byte for byte');
+});
+
 test('lock: a leaked flow.lock.reclaim-* (takeover crash) does not block a later acquire', async () => {
   const { flowDir } = await tmpFlow();
   // Plant a stale lock + simulate a crash AFTER the reclaim rename, BEFORE the
