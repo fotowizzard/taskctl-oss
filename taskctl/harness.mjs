@@ -25,6 +25,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { assertLaunchValue } from './launch-safety.mjs';
 import { renderTemplate } from './templating.mjs';
 import { slugify } from './newproject.mjs';
 
@@ -65,6 +66,19 @@ export function deriveProjectName(workspaceRoot) {
  */
 export function readGitRemote(repoPath) {
   if (!repoPath) return null;
+
+  // P2 (#22): no shell is involved here — execFileSync passes an argv array — so
+  // the exposure is not shell syntax, it is argv POSITION: a repoPath beginning
+  // with "-" is read by git as an option rather than as the value of `-C`. The
+  // check goes OUTSIDE the catch below on purpose. That catch exists to make a
+  // missing remote a best-effort null; swallowing a refusal into the same null
+  // would turn "this configuration is trying to inject an argument" into "no
+  // remote found", and init-harness would scaffold on happily.
+  assertLaunchValue(repoPath, {
+    key: 'repoPath',
+    site: '`git -C <value> remote get-url origin` — an argv element, spawned without a shell',
+  });
+
   try {
     const out = execFileSync('git', ['-C', repoPath, 'remote', 'get-url', 'origin'], {
       encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000,

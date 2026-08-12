@@ -10,6 +10,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { getEngine, assertEngineRegistered } from './engines.mjs';
+import { assertLaunchValue, quoteForPastedCommand } from './launch-safety.mjs';
 
 // ── Stage Configuration ──────────────────────────────────────────────────
 
@@ -76,6 +77,27 @@ function spawnAI({ engine, interactive, promptFile, orchRoot, repoPath, cwd, cap
   // adapter's buildSpawn (the configured rcfg.engines.reasoningEffort flows in via
   // reasoningEffort; the old `xhigh` override note still applies).
   const adapter = getEngine(engine);
+
+  // P2 (#22): the spawn below is `shell: true`, so `args` is not an argument
+  // vector — Node joins it into one command string and hands that to the shell.
+  // `reasoningEffort` is interpolated into an element there
+  // (`-c model_reasoning_effort=<value>`), and it is the value issue #22 was
+  // filed for. It is already cleared at config resolution; re-asserting at the
+  // spawn is the second layer, and it is the LAST point at which refusing still
+  // means nothing ran.
+  //
+  // Only `reasoningEffort` is checked here, and the reason is provenance rather
+  // than laziness: `repoPath`/`cwd` arrive at this function from configuration on
+  // one path and from the install's own directories on another (runEngineStep
+  // passes the new-project flow dir as both), and by the time they are function
+  // parameters the two are indistinguishable. Refusing them here would refuse an
+  // ordinary install under a path with a space; that is why the primary gate is
+  // at config resolution, where a value still knows where it came from.
+  assertLaunchValue(reasoningEffort, {
+    key: 'engines.reasoningEffort',
+    site: 'the engine spawn — an argv element in a child_process.spawn with shell:true',
+  });
+
   const { cmd, args, spawnOptions } = adapter.buildSpawn({
     promptFile, orchRoot, repoPath, cwd: workDir, reasoningEffort, appendSystemPrompt, interactive,
   });
@@ -659,7 +681,18 @@ export async function cmdAutopilot(ctx) {
       if (answer.toLowerCase() !== 'y') {
         log('publish cancelled by user');
         console.log('\n  Cancelled. Task is ready for manual publish:');
-        console.log(`  taskctl publish ${issueKey} --repo-path ${repoPath}`);
+        // P2 (#22): a PRINTED command — the operator pastes this into their own
+        // shell, so it has to be correct there, not merely correct here. Bare,
+        // it was wrong for every repo path containing a space: the paste would
+        // run with a truncated --repo-path and a stray extra argument.
+        // quoteForPastedCommand re-checks the value and wraps it, and the
+        // wrapping is the same in cmd.exe and in a POSIX shell because the
+        // alphabet the check admits is one they agree about.
+        const pastePath = quoteForPastedCommand(repoPath, {
+          key: 'repoPath',
+          site: 'the `taskctl publish … --repo-path` command printed for you to paste into your own shell',
+        });
+        console.log(`  taskctl publish ${issueKey} --repo-path ${pastePath}`);
         return;
       }
     }
